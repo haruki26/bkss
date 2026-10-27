@@ -39,6 +39,11 @@
 - library は global logger/subscriber やログ出力先を初期化しません。伝播する同じエラーを各層で重複して記録せず、最終的な対応方針を決める境界で必要な診断を行ってください。これは有用な debug span や必要な計測を禁じるものではありません。
 - Shell library 自身は fatal error を印字したり終了コードを決めたりせず、呼び出し側が `Result` に基づいて判断します。
 
+### Tests
+
+- 単体テストは、実装と同じファイル内の `#[cfg(test)] mod tests` に記述してください。
+- 統合テストは、workspace 内の各 crate のルートディレクトリにある `tests/` 配下に作成してください（例: `crates/bkss-core/tests/`）。
+
 ### Error-path Verification
 
 - エラー経路のテストでは、原因と必要な操作・対象の文脈が呼び出し側まで保たれること、契約上副作用前に拒否する入力が副作用を起こさないことを確認してください。
