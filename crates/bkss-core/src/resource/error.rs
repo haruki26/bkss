@@ -52,3 +52,22 @@ pub enum ResourceAcquireError {
     Busy,
     Failed(Rc<SourceFailure>),
 }
+
+impl std::fmt::Display for ResourceAcquireError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => f.write_str("resource scope is closed"),
+            Self::Busy => f.write_str("resource activation is busy"),
+            Self::Failed(failure) => failure.fmt(f),
+        }
+    }
+}
+
+impl Error for ResourceAcquireError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Failed(failure) => Some(failure.as_ref()),
+            Self::Closed | Self::Busy => None,
+        }
+    }
+}

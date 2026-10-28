@@ -108,6 +108,16 @@ impl<T: Clone + 'static> Reactive<T> {
         })
     }
 
+    pub(crate) fn observe_app(
+        &self,
+        cx: &App,
+        listener: impl Fn(&T, &mut App) -> bool + 'static,
+    ) -> ReactiveSubscription {
+        listen(&self.entity, cx, move |publication, cx| {
+            listener(publication.value.as_ref(), cx)
+        })
+    }
+
     /// Creates a derived value by synchronously mapping each publication.
     pub fn map<U, C, F>(&self, cx: &mut C, map: F) -> Reactive<U>
     where
