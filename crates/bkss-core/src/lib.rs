@@ -1,7 +1,12 @@
+mod glass;
 mod reactive;
 mod resource;
 mod shell;
 
+pub use glass::{
+    Glass, GlassBorder, GlassColor, GlassElement, GlassInnerEffect, GlassOpacity, GlassPatch,
+    GlassRadius, GlassRim, GlassState, GlassStyle, GlassStyleError, GlassValue,
+};
 pub use reactive::{Reactive, ReactiveSubscription, SourceState, State};
 pub use resource::{
     ResourceAcquireError, ResourceLease, ResourceScope, Source, SourceDescriptor, SourceFailure,
