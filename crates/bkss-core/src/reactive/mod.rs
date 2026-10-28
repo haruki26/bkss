@@ -2,7 +2,7 @@ mod cell;
 mod source_state;
 
 pub use cell::ReactiveSubscription;
-use cell::{Observer, ValueCell, invoke_observer, listen, publish, publish_weak};
+use cell::{Observer, ValueCell, invoke_observer, listen, publish, publish_guarded, publish_weak};
 use gpui::{App, AppContext, Context, Entity};
 pub use source_state::SourceState;
 use std::{
@@ -41,6 +41,15 @@ impl<T: 'static> State<T> {
     /// Publishes a value and notifies dependents, including for equal values.
     pub fn set(&self, value: T, cx: &mut App) {
         publish(&self.entity, value, cx);
+    }
+
+    pub(crate) fn set_guarded(
+        &self,
+        value: T,
+        alive: std::rc::Weak<std::cell::Cell<bool>>,
+        cx: &mut App,
+    ) {
+        publish_guarded(&self.entity, value, Some(alive), cx);
     }
 
     /// Returns a read-only view of this state.
@@ -232,6 +241,57 @@ mod tests {
         });
         assert_eq!(reactive.get(&cx), 9);
         assert_eq!(notifications.get(), 2);
+    }
+
+    #[test]
+    fn guarded_publication_rejects_an_inactive_token() {
+        let cx = TestAppContext::single();
+        let (state, reactive) = cx.update(|cx| {
+            let state = State::new(0, cx);
+            (state.clone(), state.reactive())
+        });
+        let alive = Rc::new(Cell::new(false));
+
+        cx.update(|cx| state.set_guarded(1, Rc::downgrade(&alive), cx));
+
+        assert_eq!(reactive.get(&cx), 0);
+    }
+
+    #[test]
+    fn invalidated_queued_guarded_publication_is_skipped_and_queue_drains() {
+        let cx = TestAppContext::single();
+        let (state, values, first_owner, later_owner, _first, _later) = cx.update(|cx| {
+            let state = State::new(0, cx);
+            let reactive = state.reactive();
+            let alive = Rc::new(Cell::new(true));
+            let first_owner = cx.new(|_| ());
+            let queued_state = state.clone();
+            let queued_alive = Rc::downgrade(&alive);
+            let first = first_owner.update(cx, |_, owner_cx| {
+                reactive.observe(owner_cx, move |_, value, owner_cx| {
+                    if *value == 1 {
+                        queued_state.set_guarded(2, queued_alive.clone(), owner_cx);
+                        alive.set(false);
+                        queued_state.set(3, owner_cx);
+                    }
+                })
+            });
+            let later_owner = cx.new(|_| ());
+            let values = Rc::new(std::cell::RefCell::new(Vec::new()));
+            let observed_values = Rc::clone(&values);
+            let later = later_owner.update(cx, |_, owner_cx| {
+                reactive.observe(owner_cx, move |_, value, _| {
+                    observed_values.borrow_mut().push(*value);
+                })
+            });
+            (state, values, first_owner, later_owner, first, later)
+        });
+
+        cx.update(|cx| state.set(1, cx));
+
+        assert_eq!(state.reactive().get(&cx), 3);
+        assert_eq!(*values.borrow(), [1, 3]);
+        drop((first_owner, later_owner));
     }
 
     #[test]

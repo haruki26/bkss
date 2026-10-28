@@ -1,5 +1,9 @@
 use gpui::{App, AppContext, Context, Entity, WeakEntity};
-use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::VecDeque,
+    rc::{Rc, Weak},
+};
 
 type Listener<T> = Rc<dyn Fn(&Publication<T>, &mut App) -> bool>;
 
@@ -31,7 +35,20 @@ pub(super) struct ValueCell<T> {
     sequence: u64,
     listeners: Rc<RefCell<ListenerSet<T>>>,
     dispatching: bool,
-    pending: VecDeque<T>,
+    pending: VecDeque<Pending<T>>,
+}
+
+struct Pending<T> {
+    value: T,
+    alive: Option<Weak<Cell<bool>>>,
+}
+
+impl<T> Pending<T> {
+    fn is_alive(&self) -> bool {
+        self.alive
+            .as_ref()
+            .is_none_or(|alive| alive.upgrade().is_some_and(|alive| alive.get()))
+    }
 }
 
 impl<T> ValueCell<T> {
@@ -144,14 +161,27 @@ fn dispatch<T>(registry: &Rc<RefCell<ListenerSet<T>>>, publication: Publication<
 }
 
 pub(super) fn publish<T: 'static>(entity: &Entity<ValueCell<T>>, value: T, cx: &mut App) {
+    publish_guarded(entity, value, None, cx);
+}
+
+pub(super) fn publish_guarded<T: 'static>(
+    entity: &Entity<ValueCell<T>>,
+    value: T,
+    alive: Option<Weak<Cell<bool>>>,
+    cx: &mut App,
+) {
     let first = entity.update(cx, |cell, cx| {
+        let pending = Pending { value, alive };
+        if !pending.is_alive() {
+            return None;
+        }
         if cell.dispatching {
-            cell.pending.push_back(value);
+            cell.pending.push_back(pending);
             return None;
         }
 
         cell.dispatching = true;
-        let publication = commit(cell, value);
+        let publication = commit(cell, pending.value);
         cx.notify();
         Some(publication)
     });
@@ -164,13 +194,17 @@ pub(super) fn publish<T: 'static>(entity: &Entity<ValueCell<T>>, value: T, cx: &
         dispatch(&listeners, publication, cx);
 
         let next = entity.update(cx, |cell, cx| {
-            if let Some(value) = cell.pending.pop_front() {
-                let publication = commit(cell, value);
+            loop {
+                let Some(pending) = cell.pending.pop_front() else {
+                    cell.dispatching = false;
+                    break None;
+                };
+                if !pending.is_alive() {
+                    continue;
+                }
+                let publication = commit(cell, pending.value);
                 cx.notify();
-                Some(publication)
-            } else {
-                cell.dispatching = false;
-                None
+                break Some(publication);
             }
         });
         let Some(next) = next else {
