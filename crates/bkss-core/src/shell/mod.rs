@@ -1,10 +1,14 @@
 mod binding;
 mod error;
 mod runtime;
+mod surface;
 
 pub use binding::MountedBinding;
 pub use error::ShellError;
 pub use runtime::RuntimeHandle;
+pub use surface::{
+    DEFAULT_DISPLAY_READINESS_TIMEOUT, SurfaceDescriptor, SurfaceDescriptorError, SurfaceError,
+};
 
 use gpui::App;
 
@@ -14,13 +18,23 @@ pub struct Shell;
 impl Shell {
     /// Attaches to an existing app and runs setup before returning the handle.
     ///
-    /// Fatal source failures and setup failures request quit of the entire host
-    /// app. Setup failure immediately stops this runtime's resources.
+    /// This runtime owns only resources and windows it creates. Setup and fatal
+    /// failures stop those resources without requesting that the host app quit.
+    /// It does not change the host's GPUI quit mode; GPUI may apply its existing
+    /// last-window quit policy if a BKSS surface is the app's only open window.
     pub fn attach(
         cx: &mut App,
         setup: impl FnOnce(RuntimeHandle, &mut App) -> Result<(), ShellError>,
     ) -> Result<RuntimeHandle, ShellError> {
-        let runtime = RuntimeHandle::new(cx);
+        Self::attach_with_quit_policy(cx, setup, false)
+    }
+
+    fn attach_with_quit_policy(
+        cx: &mut App,
+        setup: impl FnOnce(RuntimeHandle, &mut App) -> Result<(), ShellError>,
+        quit_host_on_failure: bool,
+    ) -> Result<RuntimeHandle, ShellError> {
+        let runtime = RuntimeHandle::new(cx, quit_host_on_failure);
         if let Err(error) = setup(runtime.clone(), cx) {
             return Err(runtime.setup_failed(error, cx));
         }
@@ -31,7 +45,8 @@ impl Shell {
     }
 
     #[cfg(target_os = "linux")]
-    /// Runs the Linux GPUI event loop and returns its finalized shell result.
+    /// Owns the Linux GPUI application, event loop, and quit policy, then returns
+    /// the finalized shell result. Unlike [`Self::attach`], failures request app quit.
     pub fn run(
         setup: impl FnOnce(RuntimeHandle, &mut App) -> Result<(), ShellError> + 'static,
     ) -> Result<(), ShellError> {
@@ -41,12 +56,14 @@ impl Shell {
         let retained = Rc::new(RefCell::new(None));
         let app_retained = Rc::clone(&retained);
 
-        gpui_platform::application().run(move |cx| match Self::attach(cx, setup) {
-            Ok(handle) => {
-                *app_result.borrow_mut() = handle.result();
-                *app_retained.borrow_mut() = Some(handle);
+        gpui_platform::application().run(move |cx| {
+            match Self::attach_with_quit_policy(cx, setup, true) {
+                Ok(handle) => {
+                    *app_result.borrow_mut() = handle.result();
+                    *app_retained.borrow_mut() = Some(handle);
+                }
+                Err(error) => *app_result.borrow_mut() = Some(Err(error)),
             }
-            Err(error) => *app_result.borrow_mut() = Some(Err(error)),
         });
 
         if let Some(handle) = retained.borrow().as_ref() {
@@ -173,7 +190,7 @@ pub(super) mod test_support {
 mod tests {
     use super::test_support::*;
     use super::*;
-    use gpui::TestAppContext;
+    use gpui::{AppContext, TestAppContext, WindowOptions};
     use std::{
         any::TypeId,
         cell::{Cell, RefCell},
@@ -278,6 +295,41 @@ mod tests {
         assert_eq!(stops.get(), 1);
         cx.quit();
         assert!(matches!(runtime.result(), Some(Err(ShellError::Source(_)))));
+        drop(binding);
+    }
+
+    #[test]
+    fn attached_fatal_source_failure_preserves_an_unowned_host_window() {
+        let cx = TestAppContext::single();
+        let host = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| gpui::EmptyView)
+            })
+            .unwrap()
+        });
+        let (descriptor, publisher) =
+            descriptor(Rc::new(Cell::new(0)), Rc::new(Cell::new(0)), false);
+        let binding = Rc::new(RefCell::new(None));
+        let binding_slot = Rc::clone(&binding);
+        let runtime = cx.update(|cx| {
+            Shell::attach(cx, |runtime, cx| {
+                *binding_slot.borrow_mut() = Some(runtime.mount(&descriptor, cx)?);
+                Ok(())
+            })
+            .unwrap()
+        });
+
+        cx.update(|cx| {
+            publisher
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .fail(TestError("fatal"), cx)
+        });
+
+        assert!(matches!(runtime.result(), Some(Err(ShellError::Source(_)))));
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+        assert!(host.read_with(&cx, |_, _| ()).is_ok());
         drop(binding);
     }
 
