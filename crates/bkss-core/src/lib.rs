@@ -13,6 +13,7 @@ pub use resource::{
     SourceFailurePhase, SourcePublisher,
 };
 pub use shell::{
-    DEFAULT_DISPLAY_READINESS_TIMEOUT, MountedBinding, RuntimeHandle, Shell, ShellError,
+    DEFAULT_DISPLAY_READINESS_TIMEOUT, DisplaySelection, LayerSurfaceConfig,
+    LayerSurfaceDeclaration, LayerSurfaceError, MountedBinding, RuntimeHandle, Shell, ShellError,
     SurfaceDescriptor, SurfaceDescriptorError, SurfaceError,
 };

@@ -4,3 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bkss-core = { path = "../bkss-core" }
+gpui = { git = "https://github.com/zed-industries/zed", rev = "c83abe7d0e060de08db386fbf86f7e95bfe6cb09", default-features = false, features = ["wayland"] }
+
+[dev-dependencies]
+gpui = { git = "https://github.com/zed-industries/zed", rev = "c83abe7d0e060de08db386fbf86f7e95bfe6cb09", default-features = false, features = ["test-support"] }

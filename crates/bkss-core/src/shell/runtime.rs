@@ -1,8 +1,9 @@
 use super::{
     MountedBinding, ShellError,
     surface::{
-        DISPLAY_POLL_INTERVAL, DisplayReadiness, Readiness, SURFACE_NAMESPACE, SurfaceDescriptor,
-        SurfaceError,
+        DISPLAY_POLL_INTERVAL, DisplayReadiness, LayerContentFactory, LayerSurfaceConfig,
+        LayerSurfaceDeclaration, LayerSurfaceError, Readiness, SURFACE_NAMESPACE,
+        StartupTargetError, StartupTargets, SurfaceDescriptor, SurfaceError,
     },
 };
 use crate::{
@@ -17,23 +18,29 @@ use gpui::{
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
-    time::Instant,
 };
 
 struct RuntimeInner {
     scope: ResourceScope,
     outcome: RefCell<Option<Result<(), ShellError>>>,
     stopped: Cell<bool>,
-    registered_surface: Cell<bool>,
     surfaces: RefCell<Vec<AnyWindowHandle>>,
-    surface_task: RefCell<Option<Task<()>>>,
-    surface_task_active: Cell<bool>,
-    surface_cancel: RefCell<Option<Box<dyn FnOnce()>>>,
+    surface_works: RefCell<Vec<Rc<SurfaceWork>>>,
     app: AsyncApp,
     quit_host_on_failure: bool,
     host_quit_requested: Cell<bool>,
     _failure_subscription: RefCell<Option<ReactiveSubscription>>,
     _quit_subscription: RefCell<Option<Subscription>>,
+}
+
+struct SurfaceWork {
+    task: RefCell<Option<Task<()>>>,
+    active: Cell<bool>,
+    cancel: RefCell<Option<Box<dyn FnOnce()>>>,
+}
+
+struct LayerFactory<V: Render + 'static> {
+    content: LayerContentFactory<V>,
 }
 
 /// Cloneable handle to a single attached shell runtime.
@@ -53,11 +60,8 @@ impl RuntimeHandle {
             scope,
             outcome: RefCell::new(None),
             stopped: Cell::new(false),
-            registered_surface: Cell::new(false),
             surfaces: RefCell::new(Vec::new()),
-            surface_task: RefCell::new(None),
-            surface_task_active: Cell::new(false),
-            surface_cancel: RefCell::new(None),
+            surface_works: RefCell::new(Vec::new()),
             app: cx.to_async(),
             quit_host_on_failure,
             host_quit_requested: Cell::new(false),
@@ -104,8 +108,7 @@ impl RuntimeHandle {
             .map(MountedBinding::new)
     }
 
-    /// Registers the runtime's single low-level surface. Registration is allowed
-    /// once, before shutdown; its factory runs once only after the explicitly
+    /// Registers a low-level surface. Its factory runs once after the explicitly
     /// selected display is present. Shutdown before readiness prevents creation.
     pub fn mount_surface<V: Render + 'static>(
         &self,
@@ -115,28 +118,34 @@ impl RuntimeHandle {
         if self.0.stopped.get() {
             return Err(ShellError::setup(SurfaceRegistrationError::Closed));
         }
-        if self.0.registered_surface.replace(true) {
-            return Err(ShellError::setup(
-                SurfaceRegistrationError::AlreadyRegistered,
-            ));
-        }
-
         let weak = Rc::downgrade(&self.0);
         let display_id = descriptor.display_id;
         let size = descriptor.size;
         let timeout = descriptor.readiness_timeout;
         let content = Rc::new(RefCell::new(Some(descriptor.content)));
+        let work = Rc::new(SurfaceWork {
+            task: RefCell::new(None),
+            active: Cell::new(false),
+            cancel: RefCell::new(None),
+        });
         let cancel_content = Rc::clone(&content);
-        *self.0.surface_cancel.borrow_mut() = Some(Box::new(move || {
-            cancel_content.borrow_mut().take();
+        *work.cancel.borrow_mut() = Some(Box::new(move || {
+            let content = cancel_content.borrow_mut().take();
+            drop(content);
         }));
         let task_content = Rc::clone(&content);
+        let weak_work = Rc::downgrade(&work);
+        let started = cx.background_executor().now();
         let task = cx.spawn(async move |cx| {
-            let mut readiness = DisplayReadiness::new(timeout, Instant::now());
+            let mut readiness = DisplayReadiness::new(timeout, started);
             loop {
                 let Some(inner) = weak.upgrade() else { break };
-                inner.surface_task_active.set(true);
+                let Some(work) = weak_work.upgrade() else {
+                    break;
+                };
+                work.active.set(true);
                 if inner.stopped.get() {
+                    work.active.set(false);
                     break;
                 }
                 let found = cx.update(|cx| {
@@ -144,15 +153,19 @@ impl RuntimeHandle {
                         .iter()
                         .any(|display| display.id() == display_id)
                 });
-                match readiness.poll(found, Instant::now()) {
+                match readiness.poll(found, cx.background_executor().now()) {
                     Readiness::Waiting => {
-                        inner.surface_task_active.set(false);
+                        work.active.set(false);
                         drop(inner);
+                        drop(work);
                         cx.background_executor().timer(DISPLAY_POLL_INTERVAL).await;
                     }
                     Readiness::TimedOut => {
-                        inner.surface_task_active.set(false);
-                        inner.surface_cancel.borrow_mut().take();
+                        work.active.set(false);
+                        let cancel = work.cancel.borrow_mut().take();
+                        if let Some(cancel) = cancel {
+                            cancel();
+                        }
                         cx.update(|app| {
                             record_surface_failure(
                                 &inner,
@@ -167,9 +180,12 @@ impl RuntimeHandle {
                     }
                     Readiness::Ready => {
                         if inner.stopped.get() {
+                            work.active.set(false);
                             break;
                         }
-                        let Some(content) = task_content.borrow_mut().take() else {
+                        let content = task_content.borrow_mut().take();
+                        let Some(content) = content else {
+                            work.active.set(false);
                             break;
                         };
                         let opened = cx
@@ -198,16 +214,204 @@ impl RuntimeHandle {
                             )
                             .map(Into::into)
                             .map_err(|cause| cause.into_boxed_dyn_error());
-                        inner.surface_cancel.borrow_mut().take();
+                        let cancel = work.cancel.borrow_mut().take();
+                        if let Some(cancel) = cancel {
+                            cancel();
+                        }
                         cx.update(|app| finish_surface_open(&inner, display_id, opened, app));
-                        inner.surface_task_active.set(false);
+                        work.active.set(false);
                         break;
                     }
-                    Readiness::Finished => break,
+                    Readiness::Finished => {
+                        work.active.set(false);
+                        break;
+                    }
                 }
             }
         });
-        *self.0.surface_task.borrow_mut() = Some(task);
+        *work.task.borrow_mut() = Some(task);
+        self.0.surface_works.borrow_mut().push(work);
+        Ok(())
+    }
+
+    /// Registers a non-interactive layer surface declaration for startup displays.
+    pub fn mount_layer_surface<V: Render + 'static>(
+        &self,
+        declaration: LayerSurfaceDeclaration<V>,
+        cx: &mut App,
+    ) -> Result<(), ShellError> {
+        if self.0.stopped.get() {
+            return Err(ShellError::setup(SurfaceRegistrationError::Closed));
+        }
+
+        let started = cx.background_executor().now();
+        let snapshot = cx
+            .displays()
+            .iter()
+            .map(|display| (display.id(), display.bounds()))
+            .collect::<Vec<_>>();
+        let mut targets = StartupTargets::new(
+            declaration.displays,
+            snapshot,
+            started,
+            declaration.readiness_timeout,
+        )
+        .map_err(ShellError::setup)?;
+        let factory = Rc::new(RefCell::new(Some(LayerFactory {
+            content: declaration.content,
+        })));
+        let configure: Rc<dyn Fn(gpui::DisplayId, Bounds<gpui::Pixels>) -> LayerSurfaceConfig> =
+            Rc::from(declaration.configure);
+        let work = Rc::new(SurfaceWork {
+            task: RefCell::new(None),
+            active: Cell::new(false),
+            cancel: RefCell::new(None),
+        });
+        let cancel_factory = Rc::clone(&factory);
+        *work.cancel.borrow_mut() = Some(Box::new(move || {
+            let factory = cancel_factory.borrow_mut().take();
+            drop(factory);
+        }));
+
+        let weak = Rc::downgrade(&self.0);
+        let weak_work = Rc::downgrade(&work);
+        let task_factory = Rc::clone(&factory);
+        let task_configure = Rc::clone(&configure);
+        let task = cx.spawn(async move |cx| {
+            loop {
+                let Some(inner) = weak.upgrade() else { break };
+                let Some(work) = weak_work.upgrade() else {
+                    break;
+                };
+                if inner.stopped.get() {
+                    break;
+                }
+                work.active.set(true);
+                let snapshot = cx.update(|app| {
+                    app.displays()
+                        .iter()
+                        .map(|display| (display.id(), display.bounds()))
+                        .collect::<Vec<_>>()
+                });
+                let ready = match targets.poll(&snapshot, cx.background_executor().now()) {
+                    Ok(ready) => ready,
+                    Err(StartupTargetError::EnumerationTimeout { timeout }) => {
+                        work.active.set(false);
+                        let error =
+                            ShellError::setup(LayerSurfaceError::DisplayEnumerationTimeout {
+                                timeout,
+                            });
+                        cx.update(|app| {
+                            record_setup_failure(&inner, error);
+                            stop_runtime(&inner, app);
+                            request_host_quit(&inner, app);
+                        });
+                        break;
+                    }
+                    Err(StartupTargetError::DisplayTimeout {
+                        display_id,
+                        timeout,
+                    }) => {
+                        work.active.set(false);
+                        cx.update(|app| {
+                            record_surface_failure(
+                                &inner,
+                                SurfaceError::DisplayReadinessTimeout {
+                                    display_id,
+                                    timeout,
+                                },
+                                app,
+                            )
+                        });
+                        break;
+                    }
+                };
+
+                let mut failed = false;
+                for (display_id, bounds) in ready {
+                    if inner.stopped.get() {
+                        break;
+                    }
+                    let config = task_configure(display_id, bounds);
+                    if inner.stopped.get() {
+                        break;
+                    }
+                    if !valid_layer_config(&config) {
+                        work.active.set(false);
+                        let cause: Rc<dyn std::error::Error + Send + Sync> =
+                            Rc::new(LayerSurfaceError::InvalidConfiguration { size: config.size });
+                        cx.update(|app| {
+                            record_surface_failure(
+                                &inner,
+                                SurfaceError::Creation { display_id, cause },
+                                app,
+                            )
+                        });
+                        failed = true;
+                        break;
+                    }
+                    if inner.stopped.get() {
+                        break;
+                    }
+                    let Some(mut factory) = task_factory.borrow_mut().take() else {
+                        failed = true;
+                        break;
+                    };
+                    let mut options = config.options;
+                    options.namespace = SURFACE_NAMESPACE.to_owned();
+                    options.keyboard_interactivity = gpui::layer_shell::KeyboardInteractivity::None;
+                    let opened = cx
+                        .open_window(
+                            WindowOptions {
+                                display_id: Some(display_id),
+                                window_bounds: Some(WindowBounds::Windowed(Bounds {
+                                    origin: gpui::point(px(0.), px(0.)),
+                                    size: config.size,
+                                })),
+                                focus: false,
+                                window_background: WindowBackgroundAppearance::Transparent,
+                                kind: WindowKind::LayerShell(options),
+                                ..Default::default()
+                            },
+                            |window, app| {
+                                window.set_input_region(Some(&[]));
+                                (factory.content)(display_id, window, app)
+                            },
+                        )
+                        .map(Into::into)
+                        .map_err(|cause| cause.into_boxed_dyn_error());
+                    if inner.stopped.get() {
+                        drop(factory);
+                        cx.update(|app| finish_surface_open(&inner, display_id, opened, app));
+                        failed = true;
+                        break;
+                    }
+                    cx.update(|app| finish_surface_open(&inner, display_id, opened, app));
+                    if !inner.stopped.get() {
+                        *task_factory.borrow_mut() = Some(factory);
+                    } else {
+                        drop(factory);
+                    }
+                    if inner.stopped.get() {
+                        failed = true;
+                        break;
+                    }
+                }
+                work.active.set(false);
+                if failed || inner.stopped.get() || targets.finished() {
+                    let cancel = work.cancel.borrow_mut().take();
+                    if let Some(cancel) = cancel {
+                        cancel();
+                    }
+                    break;
+                }
+                drop(inner);
+                drop(work);
+                cx.background_executor().timer(DISPLAY_POLL_INTERVAL).await;
+            }
+        });
+        *work.task.borrow_mut() = Some(task);
+        self.0.surface_works.borrow_mut().push(work);
         Ok(())
     }
 
@@ -247,14 +451,12 @@ impl RuntimeHandle {
 #[derive(Debug)]
 enum SurfaceRegistrationError {
     Closed,
-    AlreadyRegistered,
 }
 
 impl std::fmt::Display for SurfaceRegistrationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Closed => f.write_str("cannot register a surface after runtime shutdown"),
-            Self::AlreadyRegistered => f.write_str("runtime already has a registered surface"),
         }
     }
 }
@@ -264,7 +466,14 @@ impl std::error::Error for SurfaceRegistrationError {}
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
         self.scope.shutdown();
-        self.surface_task.get_mut().take();
+        let works = std::mem::take(self.surface_works.get_mut());
+        for work in works {
+            work.task.borrow_mut().take();
+            let cancel = work.cancel.borrow_mut().take();
+            if let Some(cancel) = cancel {
+                cancel();
+            }
+        }
         let handles = std::mem::take(self.surfaces.get_mut());
         if !handles.is_empty() {
             let app = self.app.clone();
@@ -280,6 +489,16 @@ impl Drop for RuntimeInner {
 
 fn remove_surface(cx: &mut impl AppContext, handle: AnyWindowHandle) {
     let _ = cx.update_window(handle, |_, window, _| window.remove_window());
+}
+
+fn valid_layer_config(config: &LayerSurfaceConfig) -> bool {
+    [config.size.width, config.size.height]
+        .into_iter()
+        .all(|dimension| f32::from(dimension).is_finite() && f32::from(dimension) >= 1.0)
+        && config
+            .options
+            .exclusive_zone
+            .is_none_or(|zone| f32::from(zone).is_finite() && f32::from(zone) >= 0.0)
 }
 
 fn finish_surface_open(
@@ -307,10 +526,14 @@ fn stop_runtime(inner: &RuntimeInner, cx: &mut App) {
         return;
     }
     inner.scope.shutdown();
-    if !inner.surface_task_active.get() {
-        inner.surface_task.borrow_mut().take();
-        if let Some(cancel) = inner.surface_cancel.borrow_mut().take() {
-            cancel();
+    let works = inner.surface_works.borrow().clone();
+    for work in works {
+        if !work.active.get() {
+            work.task.borrow_mut().take();
+            let cancel = work.cancel.borrow_mut().take();
+            if let Some(cancel) = cancel {
+                cancel();
+            }
         }
     }
     let handles = std::mem::take(&mut *inner.surfaces.borrow_mut());
@@ -360,6 +583,7 @@ fn request_host_quit(inner: &RuntimeInner, cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::super::Shell;
+    use super::super::surface::{DisplaySelection, LayerSurfaceConfig, LayerSurfaceDeclaration};
     use super::super::test_support::*;
     use super::*;
     use crate::ResourceAcquireError;
@@ -486,7 +710,7 @@ mod tests {
     }
 
     #[test]
-    fn surface_registration_is_single_use_and_rejected_after_shutdown() {
+    fn surface_registration_allows_multiple_surfaces_and_rejects_after_shutdown() {
         let cx = TestAppContext::single();
         let called = Rc::new(Cell::new(0));
         let called_first = Rc::clone(&called);
@@ -500,13 +724,19 @@ mod tests {
                         cx.new(|_| gpui::EmptyView)
                     },
                 )?;
-                runtime.mount_surface(descriptor, cx)
+                runtime.mount_surface(descriptor, cx)?;
+                let second = SurfaceDescriptor::new(
+                    DisplayId::new(99),
+                    Size::new(px(32.), px(18.)),
+                    |_, cx| cx.new(|_| gpui::EmptyView),
+                )?;
+                runtime.mount_surface(second, cx)
             })
             .unwrap()
         });
         let duplicate_called = Rc::clone(&called);
         let duplicate = SurfaceDescriptor::new(
-            DisplayId::new(1),
+            DisplayId::new(99),
             Size::new(px(20.), px(20.)),
             move |_, cx| {
                 duplicate_called.set(duplicate_called.get() + 1);
@@ -514,10 +744,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(matches!(
-            cx.update(|cx| runtime.mount_surface(duplicate, cx)),
-            Err(ShellError::Setup(_))
-        ));
+        cx.update(|cx| runtime.mount_surface(duplicate, cx).unwrap());
 
         cx.update(|cx| runtime.shutdown(cx));
         let after_shutdown =
@@ -531,6 +758,141 @@ mod tests {
         ));
         cx.run_until_parked();
         assert_eq!(called.get(), 0);
+    }
+
+    #[test]
+    fn multiple_layer_declarations_create_owned_surfaces_and_shutdown_preserves_host() {
+        let cx = TestAppContext::single();
+        let host = cx.update(|cx| {
+            cx.open_window(WindowOptions::default(), |_, cx| {
+                cx.new(|_| gpui::EmptyView)
+            })
+            .unwrap()
+        });
+        let runtime = cx.update(|cx| {
+            let runtime = Shell::attach(cx, |_, _| Ok(())).unwrap();
+            for _ in 0..2 {
+                let declaration = LayerSurfaceDeclaration::new(
+                    DisplaySelection::AllConnected,
+                    |_, _| LayerSurfaceConfig {
+                        size: Size::new(px(40.), px(20.)),
+                        options: LayerShellOptions::default(),
+                    },
+                    |_, _, cx| cx.new(|_| gpui::EmptyView),
+                );
+                runtime.mount_layer_surface(declaration, cx).unwrap();
+            }
+            runtime
+        });
+
+        cx.run_until_parked();
+        assert_eq!(cx.update(|cx| cx.windows().len()), 3);
+        cx.update(|cx| runtime.shutdown(cx));
+        assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+        assert!(host.read_with(&cx, |_, _| ()).is_ok());
+    }
+
+    #[test]
+    fn layer_factory_shutdown_cancels_sibling_and_cleans_late_window() {
+        let cx = TestAppContext::single();
+        let called = Rc::new(Cell::new(0));
+        let called_second = Rc::clone(&called);
+        let runtime_slot = Rc::new(RefCell::new(None::<RuntimeHandle>));
+        let runtime_for_factory = Rc::clone(&runtime_slot);
+        let runtime = cx
+            .update(|cx| {
+                let runtime = Shell::attach(cx, |runtime, cx| {
+                    *runtime_slot.borrow_mut() = Some(runtime.clone());
+                    let first = LayerSurfaceDeclaration::new(
+                        DisplaySelection::AllConnected,
+                        |_, _| LayerSurfaceConfig {
+                            size: Size::new(px(40.), px(20.)),
+                            options: LayerShellOptions::default(),
+                        },
+                        move |_, _, cx| {
+                            runtime_for_factory.borrow().as_ref().unwrap().shutdown(cx);
+                            cx.new(|_| gpui::EmptyView)
+                        },
+                    );
+                    runtime.mount_layer_surface(first, cx)?;
+                    let second = LayerSurfaceDeclaration::new(
+                        DisplaySelection::AllConnected,
+                        |_, _| LayerSurfaceConfig {
+                            size: Size::new(px(40.), px(20.)),
+                            options: LayerShellOptions::default(),
+                        },
+                        move |_, _, cx| {
+                            called_second.set(called_second.get() + 1);
+                            cx.new(|_| gpui::EmptyView)
+                        },
+                    );
+                    runtime.mount_layer_surface(second, cx)
+                })?;
+                Ok::<_, ShellError>(runtime)
+            })
+            .unwrap();
+
+        cx.run_until_parked();
+        assert_eq!(called.get(), 0);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+        assert!(runtime.result().is_none());
+    }
+
+    #[test]
+    fn invalid_layer_configuration_is_fatal_with_cause_and_no_window() {
+        let cx = TestAppContext::single();
+        let runtime = cx.update(|cx| {
+            Shell::attach(cx, |runtime, cx| {
+                let declaration = LayerSurfaceDeclaration::new(
+                    DisplaySelection::AllConnected,
+                    |_, _| LayerSurfaceConfig {
+                        size: Size::new(px(0.), px(20.)),
+                        options: LayerShellOptions::default(),
+                    },
+                    |_, _, cx| cx.new(|_| gpui::EmptyView),
+                );
+                runtime.mount_layer_surface(declaration, cx)
+            })
+            .unwrap()
+        });
+
+        cx.run_until_parked();
+        let Some(Err(ShellError::Surface(error))) = runtime.result() else {
+            panic!("expected invalid layer configuration failure")
+        };
+        assert!(error.source().is_some());
+        assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+    }
+
+    #[test]
+    fn shutdown_drops_a_pending_layer_factory() {
+        let cx = TestAppContext::single();
+        let capture = Rc::new(());
+        let weak_capture = Rc::downgrade(&capture);
+        let runtime = cx.update(|cx| {
+            Shell::attach(cx, |runtime, cx| {
+                let factory_capture = Rc::clone(&capture);
+                let declaration = LayerSurfaceDeclaration::new(
+                    DisplaySelection::Explicit(vec![DisplayId::new(99)]),
+                    |_, _| LayerSurfaceConfig {
+                        size: Size::new(px(40.), px(20.)),
+                        options: LayerShellOptions::default(),
+                    },
+                    move |_, _, cx| {
+                        let _ = &factory_capture;
+                        cx.new(|_| gpui::EmptyView)
+                    },
+                );
+                runtime.mount_layer_surface(declaration, cx)
+            })
+            .unwrap()
+        });
+
+        cx.run_until_parked();
+        drop(capture);
+        assert!(weak_capture.upgrade().is_some());
+        cx.update(|cx| runtime.shutdown(cx));
+        assert!(weak_capture.upgrade().is_none());
     }
 
     #[test]
@@ -575,14 +937,20 @@ mod tests {
                         cx.new(|_| gpui::EmptyView)
                     },
                 )?;
-                runtime.mount_surface(descriptor, cx)
+                runtime.mount_surface(descriptor, cx)?;
+                let second = SurfaceDescriptor::new(
+                    DisplayId::new(1),
+                    Size::new(px(32.), px(18.)),
+                    |_, cx| cx.new(|_| gpui::EmptyView),
+                )?;
+                runtime.mount_surface(second, cx)
             })
             .unwrap()
         });
 
         cx.run_until_parked();
         assert_eq!(created.get(), 1);
-        assert_eq!(cx.update(|cx| cx.windows().len()), 2);
+        assert_eq!(cx.update(|cx| cx.windows().len()), 3);
         cx.update(|cx| runtime.shutdown(cx));
         assert_eq!(cx.update(|cx| cx.windows().len()), 1);
         assert!(host.read_with(&cx, |_, _| ()).is_ok());
@@ -645,7 +1013,14 @@ mod tests {
             .unwrap()
         });
         cx.run_until_parked();
-        assert!(!runtime.0.surface_task_active.get());
+        assert!(
+            runtime
+                .0
+                .surface_works
+                .borrow()
+                .iter()
+                .all(|work| !work.active.get())
+        );
         cx.update(|cx| runtime.shutdown(cx));
         assert!(factory_weak.upgrade().is_none());
         cx.run_until_parked();
@@ -715,7 +1090,14 @@ mod tests {
             .unwrap()
         });
         cx.run_until_parked();
-        assert!(!runtime.0.surface_task_active.get());
+        assert!(
+            runtime
+                .0
+                .surface_works
+                .borrow()
+                .iter()
+                .all(|work| !work.active.get())
+        );
         let cause: Box<dyn std::error::Error + Send + Sync> =
             Box::new(std::io::Error::other("layer creation failed"));
         cx.update(|cx| finish_surface_open(&runtime.0, target, Err(cause), cx));
