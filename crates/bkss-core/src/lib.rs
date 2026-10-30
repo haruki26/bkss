@@ -2,6 +2,7 @@ mod glass;
 mod reactive;
 mod resource;
 mod shell;
+mod surface;
 
 pub use glass::{
     Glass, GlassBorder, GlassColor, GlassElement, GlassInnerEffect, GlassOpacity, GlassPatch,
@@ -12,8 +13,9 @@ pub use resource::{
     ResourceAcquireError, ResourceLease, ResourceScope, Source, SourceDescriptor, SourceFailure,
     SourceFailurePhase, SourcePublisher,
 };
-pub use shell::{
+pub use shell::{MountedBinding, RuntimeHandle, Shell, ShellError};
+pub use surface::{
     DEFAULT_DISPLAY_READINESS_TIMEOUT, DisplaySelection, LayerSurfaceConfig,
-    LayerSurfaceDeclaration, LayerSurfaceError, MountedBinding, RuntimeHandle, Shell, ShellError,
-    SurfaceDescriptor, SurfaceDescriptorError, SurfaceError,
+    LayerSurfaceDeclaration, LayerSurfaceError, SurfaceDescriptor, SurfaceDescriptorError,
+    SurfaceError,
 };

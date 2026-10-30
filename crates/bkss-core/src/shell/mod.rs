@@ -1,16 +1,11 @@
 mod binding;
 mod error;
 mod runtime;
-mod surface;
+mod surface_runtime;
 
 pub use binding::MountedBinding;
 pub use error::ShellError;
 pub use runtime::RuntimeHandle;
-pub use surface::{
-    DEFAULT_DISPLAY_READINESS_TIMEOUT, DisplaySelection, LayerSurfaceConfig,
-    LayerSurfaceDeclaration, LayerSurfaceError, SurfaceDescriptor, SurfaceDescriptorError,
-    SurfaceError,
-};
 
 use gpui::App;
 

@@ -1,4 +1,4 @@
-use super::surface::{SurfaceDescriptorError, SurfaceError};
+use crate::surface::{SurfaceDescriptorError, SurfaceError};
 use crate::{ResourceAcquireError, SourceFailure};
 use std::{error::Error, fmt, rc::Rc};
 
@@ -64,5 +64,44 @@ impl From<ResourceAcquireError> for ShellError {
 impl From<SurfaceDescriptorError> for ShellError {
     fn from(error: SurfaceDescriptorError) -> Self {
         Self::setup(error)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::surface::SurfaceError;
+    use gpui::DisplayId;
+    use std::{error::Error, rc::Rc};
+
+    #[test]
+    fn creation_error_keeps_target_and_original_cause_in_shell_error_chain() {
+        let target = DisplayId::new(7);
+        let cause: Rc<dyn Error + Send + Sync> = Rc::new(std::io::Error::other("open failed"));
+        let error = ShellError::surface(SurfaceError::Creation {
+            display_id: target,
+            cause,
+        });
+        let ShellError::Surface(surface_error) = error else {
+            panic!("expected surface error")
+        };
+        assert_eq!(surface_error.display_id(), target);
+        assert_eq!(
+            surface_error
+                .source()
+                .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+                .map(std::io::Error::to_string)
+                .as_deref(),
+            Some("open failed")
+        );
+        assert_eq!(
+            surface_error
+                .as_ref()
+                .source()
+                .and_then(|cause| cause.downcast_ref::<std::io::Error>())
+                .map(std::io::Error::to_string)
+                .as_deref(),
+            Some("open failed")
+        );
     }
 }
