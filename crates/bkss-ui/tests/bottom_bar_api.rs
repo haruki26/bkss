@@ -50,3 +50,101 @@ fn public_declaration_and_runtime_extension_keep_content_inert_until_mount() {
     });
     assert_eq!(calls.get(), 0);
 }
+
+#[test]
+fn invalid_geometry_is_rejected_before_any_runtime_or_factory_exists() {
+    let defaults = BottomBarGeometry::default();
+    assert!(BottomBar::new(defaults).is_ok());
+    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY, -1., f32::MAX] {
+        for geometry in [
+            BottomBarGeometry {
+                logical_height: value,
+                ..defaults
+            },
+            BottomBarGeometry {
+                horizontal_padding: value,
+                ..defaults
+            },
+            BottomBarGeometry {
+                margins: BottomBarMargins {
+                    left: value,
+                    ..defaults.margins
+                },
+                ..defaults
+            },
+            BottomBarGeometry {
+                margins: BottomBarMargins {
+                    right: value,
+                    ..defaults.margins
+                },
+                ..defaults
+            },
+            BottomBarGeometry {
+                margins: BottomBarMargins {
+                    bottom: value,
+                    ..defaults.margins
+                },
+                ..defaults
+            },
+            BottomBarGeometry {
+                width: BottomBarWidth::FloatingContentWidth {
+                    max_logical_width: Some(value),
+                    horizontal_alignment: BottomBarAlignment::Center,
+                },
+                ..defaults
+            },
+        ] {
+            assert!(BottomBar::new(geometry).is_err(), "{geometry:?}");
+        }
+    }
+    for value in [0., 0.5] {
+        assert!(
+            BottomBar::new(BottomBarGeometry {
+                logical_height: value,
+                ..defaults
+            })
+            .is_err()
+        );
+        assert!(
+            BottomBar::new(BottomBarGeometry {
+                width: BottomBarWidth::FloatingContentWidth {
+                    max_logical_width: Some(value),
+                    horizontal_alignment: BottomBarAlignment::Center
+                },
+                ..defaults
+            })
+            .is_err()
+        );
+    }
+    assert!(
+        BottomBar::new(BottomBarGeometry {
+            logical_height: 1_500_000_000.,
+            margins: BottomBarMargins {
+                bottom: 1_500_000_000.,
+                ..defaults.margins
+            },
+            ..defaults
+        })
+        .is_err()
+    );
+    assert!(
+        BottomBar::new(BottomBarGeometry {
+            horizontal_padding: 1_500_000_000.,
+            ..defaults
+        })
+        .is_err()
+    );
+    assert!(
+        BottomBar::new(BottomBarGeometry {
+            logical_height: 1.,
+            horizontal_padding: 0.,
+            margins: BottomBarMargins {
+                left: 0.,
+                right: 0.,
+                bottom: 0.
+            },
+            ..defaults
+        })
+        .is_ok()
+    );
+}

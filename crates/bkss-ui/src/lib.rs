@@ -1,14 +1,11 @@
 //! Static shell widgets built on BKSS core and ordinary GPUI content.
 
-mod bottom_bar;
-mod overlay;
+mod layout;
 
 pub use bkss_core::DisplaySelection;
-pub use bottom_bar::{
+pub use layout::{
     BottomBar, BottomBarAlignment, BottomBarGeometry, BottomBarGeometryError, BottomBarMargins,
-    BottomBarWidth, RuntimeHandleExt,
-};
-pub use overlay::{
-    KeyboardFocus, OverlayAnchors, OverlayDefinition, OverlayGeometry, OverlayGeometryError,
-    OverlayHandle, OverlayPlacement, OverlayRuntimeHandleExt, PointerDismiss,
+    BottomBarWidth, KeyboardFocus, OverlayAnchors, OverlayDefinition, OverlayGeometry,
+    OverlayGeometryError, OverlayHandle, OverlayPlacement, OverlayRuntimeHandleExt, PointerDismiss,
+    RuntimeHandleExt,
 };
