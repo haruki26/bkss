@@ -121,7 +121,39 @@ impl RuntimeHandle {
         + 'static,
         cx: &mut App,
     ) -> Result<crate::DynamicSurfaceHandle, ShellError> {
-        super::dynamic_surface_runtime::register(&self.0, config, readiness_timeout, factory, cx)
+        super::dynamic_surface_runtime::register(
+            &self.0,
+            config,
+            readiness_timeout,
+            None,
+            factory,
+            cx,
+        )
+    }
+
+    /// Registers an animated dynamic layer surface.
+    #[doc(hidden)]
+    pub fn register_animated_dynamic_layer_surface<V: Render + 'static>(
+        &self,
+        config: crate::LayerSurfaceConfig,
+        readiness_timeout: std::time::Duration,
+        plan: crate::AnimationPlan,
+        factory: impl FnMut(
+            crate::SurfaceInstanceHandle,
+            &mut gpui::Window,
+            &mut App,
+        ) -> Result<gpui::Entity<V>, ShellError>
+        + 'static,
+        cx: &mut App,
+    ) -> Result<crate::DynamicSurfaceHandle, ShellError> {
+        super::dynamic_surface_runtime::register(
+            &self.0,
+            config,
+            readiness_timeout,
+            Some(plan),
+            factory,
+            cx,
+        )
     }
 
     pub fn downgrade(&self) -> WeakRuntimeHandle {

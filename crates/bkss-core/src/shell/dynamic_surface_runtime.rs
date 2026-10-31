@@ -1,6 +1,7 @@
+use super::surface_animation::SurfaceAnimation;
 use super::{ShellError, runtime::RuntimeInner};
 use crate::{
-    LayerSurfaceConfig,
+    AnimationPlan, AnimationSample, LayerSurfaceConfig, Phase,
     surface::{DISPLAY_POLL_INTERVAL, DisplayReadiness, Readiness},
 };
 use gpui::{
@@ -23,6 +24,7 @@ pub struct Controller {
     runtime: Weak<RuntimeInner>,
     config: LayerSurfaceConfig,
     timeout: Duration,
+    animation_plan: Option<AnimationPlan>,
     factory: RefCell<Option<Factory>>,
     next_generation: Cell<u64>,
     entries: RefCell<HashMap<DisplayId, Entry>>,
@@ -35,10 +37,12 @@ enum Entry {
         generation: u64,
         active: Rc<Cell<bool>>,
         task: Option<Task<()>>,
+        animation: Option<SurfaceAnimation>,
     },
     Mounted {
         generation: u64,
         window: gpui::AnyWindowHandle,
+        animation: Option<SurfaceAnimation>,
     },
 }
 
@@ -96,6 +100,19 @@ impl SurfaceInstanceHandle {
         };
         controller.close_generation(self.display_id, self.generation, cx)
     }
+
+    /// Returns the latest runtime-owned animation sample without advancing it.
+    #[doc(hidden)]
+    pub fn animation_sample(&self) -> AnimationSample {
+        self.controller
+            .upgrade()
+            .and_then(|controller| controller.animation_sample(self.display_id, self.generation))
+            .unwrap_or(AnimationSample {
+                opacity: None,
+                running: false,
+                completion: None,
+            })
+    }
 }
 
 impl Controller {
@@ -109,6 +126,7 @@ impl Controller {
             return Err(SurfaceRequestError::RuntimeClosed);
         }
         if self.entries.borrow().contains_key(&display) {
+            self.reopen(display, cx);
             return Ok(());
         }
         let generation = self
@@ -124,6 +142,7 @@ impl Controller {
                 generation,
                 active: Rc::clone(&active),
                 task: None,
+                animation: None,
             },
         );
         let weak = Rc::downgrade(self);
@@ -196,6 +215,76 @@ impl Controller {
         matches!(self.entries.borrow().get(&display), Some(Entry::Pending { generation: current, .. }) if *current == generation)
     }
 
+    fn animation_sample(&self, display: DisplayId, generation: u64) -> Option<AnimationSample> {
+        self.entries
+            .borrow()
+            .get(&display)
+            .and_then(|entry| match entry {
+                Entry::Pending {
+                    generation: current,
+                    animation,
+                    ..
+                }
+                | Entry::Mounted {
+                    generation: current,
+                    animation,
+                    ..
+                } if *current == generation => animation.as_ref().map(SurfaceAnimation::value),
+                _ => None,
+            })
+    }
+
+    fn reopen(self: &Rc<Self>, display: DisplayId, cx: &mut App) {
+        let now = cx.background_executor().now();
+        let generation = {
+            let mut entries = self.entries.borrow_mut();
+            let Some(Entry::Mounted {
+                generation,
+                animation: Some(animation),
+                ..
+            }) = entries.get_mut(&display)
+            else {
+                return;
+            };
+            if animation.phase() != Phase::Exit {
+                return;
+            }
+            if let Err(error) = animation.request(Phase::Enter, now) {
+                drop(entries);
+                self.fail_animation(error, cx);
+                return;
+            }
+            *generation
+        };
+        self.defer_refresh(display, generation, cx);
+        self.queue_frame(display, generation, cx);
+    }
+
+    fn defer_refresh(self: &Rc<Self>, display: DisplayId, generation: u64, cx: &mut App) {
+        let window = match self.entries.borrow().get(&display) {
+            Some(Entry::Mounted {
+                generation: current,
+                window,
+                ..
+            }) if *current == generation => *window,
+            _ => return,
+        };
+        let weak = Rc::downgrade(self);
+        cx.defer(move |cx| {
+            let Some(controller) = weak.upgrade() else {
+                return;
+            };
+            let is_current = matches!(
+                controller.entries.borrow().get(&display),
+                Some(Entry::Mounted { generation: current, window: current_window, .. })
+                    if *current == generation && current_window.window_id() == window.window_id()
+            );
+            if is_current {
+                let _ = cx.update_window(window, |_, window, _| window.refresh());
+            }
+        });
+    }
+
     fn clear_pending(&self, display: DisplayId, generation: u64, cx: &gpui::AsyncApp) -> bool {
         let removed = {
             let mut entries = self.entries.borrow_mut();
@@ -230,6 +319,36 @@ impl Controller {
         let Some(mut factory) = self.factory.borrow_mut().take() else {
             return;
         };
+        let mut animation = if let Some(plan) = self.animation_plan {
+            match SurfaceAnimation::new(plan, cx.background_executor().now()) {
+                Ok(animation) => Some(animation),
+                Err(error) => {
+                    if let Some(runtime) = self.runtime.upgrade() {
+                        cx.update(|app| {
+                            super::runtime::record_setup_failure(
+                                &runtime,
+                                ShellError::setup(error),
+                            );
+                            super::runtime::stop_runtime(&runtime, app);
+                            super::runtime::request_host_quit(&runtime, app);
+                        });
+                    }
+                    self.clear_pending(display, generation, cx);
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(Entry::Pending {
+            generation: current,
+            animation: slot,
+            ..
+        }) = self.entries.borrow_mut().get_mut(&display)
+            && *current == generation
+        {
+            *slot = animation.take();
+        }
         let mut result: Option<Result<AnyView, ShellError>> = None;
         let mut root_entity: Option<Entity<DynamicRoot>> = None;
         let instance = SurfaceInstanceHandle {
@@ -293,16 +412,31 @@ impl Controller {
                         cx.notify();
                     });
                 }
-                let old = self
-                    .entries
-                    .borrow_mut()
-                    .insert(display, Entry::Mounted { generation, window });
-                if let Some(Entry::Pending { active, task, .. }) = old {
-                    active.set(false);
-                    if let Some(task) = task {
-                        defer_task_drop(cx, task);
+                let old = self.entries.borrow_mut().remove(&display);
+                let mut mounted_animation = match old {
+                    Some(Entry::Pending {
+                        active,
+                        task,
+                        animation,
+                        ..
+                    }) => {
+                        active.set(false);
+                        if let Some(task) = task {
+                            defer_task_drop(cx, task);
+                        }
+                        animation
                     }
-                }
+                    _ => None,
+                };
+                self.entries.borrow_mut().insert(
+                    display,
+                    Entry::Mounted {
+                        generation,
+                        window,
+                        animation: mounted_animation.take(),
+                    },
+                );
+                cx.update(|app| self.queue_frame(display, generation, app));
             }
             Ok(window) => super::surface_window::remove_window_later(cx, window),
             Err(cause) => {
@@ -323,29 +457,59 @@ impl Controller {
         }
     }
 
-    fn close(&self, display: DisplayId, cx: &mut App) -> Result<(), SurfaceRequestError> {
+    fn close(self: &Rc<Self>, display: DisplayId, cx: &mut App) -> Result<(), SurfaceRequestError> {
         self.close_generation(display, u64::MAX, cx)
     }
 
     fn close_generation(
-        &self,
+        self: &Rc<Self>,
         display: DisplayId,
         generation: u64,
         cx: &mut App,
     ) -> Result<(), SurfaceRequestError> {
-        let old = {
+        let now = cx.background_executor().now();
+        let (old, needs_frame, failure) = {
             let mut entries = self.entries.borrow_mut();
             let matches = entries.get(&display).is_some_and(|entry| match entry {
                 Entry::Pending { generation: g, .. } | Entry::Mounted { generation: g, .. } => {
                     generation == u64::MAX || *g == generation
                 }
             });
-            if matches {
-                entries.remove(&display)
+            if !matches {
+                (None, false, None)
+            } else if let Some(Entry::Mounted {
+                generation: current,
+                animation: Some(animation),
+                ..
+            }) = entries.get_mut(&display)
+            {
+                if generation != u64::MAX && *current != generation {
+                    (None, false, None)
+                } else {
+                    match animation.request(Phase::Exit, now) {
+                        Ok(()) if animation.value().running => (None, true, None),
+                        Ok(()) => (entries.remove(&display), false, None),
+                        Err(error) => (None, false, Some(error)),
+                    }
+                }
             } else {
-                None
+                (entries.remove(&display), false, None)
             }
         };
+        if let Some(error) = failure {
+            self.fail_animation(error, cx);
+            return Err(SurfaceRequestError::Unavailable);
+        }
+        if needs_frame {
+            let mounted_generation = match self.entries.borrow().get(&display) {
+                Some(Entry::Mounted { generation, .. }) => Some(*generation),
+                _ => None,
+            };
+            if let Some(generation) = mounted_generation {
+                self.defer_refresh(display, generation, cx);
+                self.queue_frame(display, generation, cx);
+            }
+        }
         match old {
             Some(Entry::Pending { active, task, .. }) => {
                 active.set(false);
@@ -359,6 +523,153 @@ impl Controller {
             None => {}
         }
         Ok(())
+    }
+
+    fn fail_animation(&self, error: crate::RunnerError, cx: &mut App) {
+        if let Some(runtime) = self.runtime.upgrade() {
+            super::runtime::record_setup_failure(&runtime, ShellError::setup(error));
+            super::runtime::stop_runtime(&runtime, cx);
+            super::runtime::request_host_quit(&runtime, cx);
+        }
+    }
+
+    fn queue_frame(self: &Rc<Self>, display: DisplayId, generation: u64, cx: &mut App) {
+        let should_queue = {
+            let mut entries = self.entries.borrow_mut();
+            let Some(Entry::Mounted {
+                generation: current,
+                animation: Some(animation),
+                ..
+            }) = entries.get_mut(&display)
+            else {
+                return;
+            };
+            if *current != generation
+                || !animation.value().running
+                || animation.is_frame_pending()
+                || self.stopped.get()
+            {
+                false
+            } else {
+                animation.set_frame_pending(true);
+                true
+            }
+        };
+        if should_queue {
+            let weak = Rc::downgrade(self);
+            cx.defer(move |cx| {
+                if let Some(controller) = weak.upgrade() {
+                    controller.schedule_frame(display, generation, cx);
+                }
+            });
+        }
+    }
+
+    fn schedule_frame(self: &Rc<Self>, display: DisplayId, generation: u64, cx: &mut App) {
+        let window = match self.entries.borrow().get(&display) {
+            Some(Entry::Mounted {
+                generation: current,
+                window,
+                animation: Some(animation),
+            }) if *current == generation && animation.is_frame_pending() => *window,
+            _ => return,
+        };
+        let weak = Rc::downgrade(self);
+        if cx
+            .update_window(window, move |_, window, _| {
+                window.on_next_frame(move |window, app| {
+                    if let Some(controller) = weak.upgrade() {
+                        controller.advance_frame(display, generation, window, app);
+                    }
+                });
+            })
+            .is_err()
+            && let Some(Entry::Mounted {
+                generation: current,
+                animation: Some(animation),
+                ..
+            }) = self.entries.borrow_mut().get_mut(&display)
+            && *current == generation
+        {
+            animation.set_frame_pending(false);
+        }
+    }
+
+    fn advance_frame(
+        self: &Rc<Self>,
+        display: DisplayId,
+        generation: u64,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        if self.stopped.get()
+            || self
+                .runtime
+                .upgrade()
+                .is_none_or(|runtime| runtime.stopped.get())
+        {
+            return;
+        }
+        let now = cx.background_executor().now();
+        let (running, finish_exit, failure) = {
+            let mut entries = self.entries.borrow_mut();
+            let Some(Entry::Mounted {
+                generation: current,
+                animation: Some(animation),
+                ..
+            }) = entries.get_mut(&display)
+            else {
+                return;
+            };
+            if *current != generation || !animation.is_frame_pending() {
+                return;
+            }
+            animation.set_frame_pending(false);
+            match animation.sample(now) {
+                Ok(sample) => (
+                    sample.running,
+                    sample.completion.is_some_and(|token| {
+                        animation.phase() == Phase::Exit
+                            && token == animation.token()
+                            && animation.is_current(token)
+                    }),
+                    None,
+                ),
+                Err(error) => (false, false, Some(error)),
+            }
+        };
+        if let Some(error) = failure {
+            self.fail_animation(error, cx);
+            return;
+        }
+        window.refresh();
+        if finish_exit {
+            let removed = {
+                let mut entries = self.entries.borrow_mut();
+                matches!(entries.get(&display), Some(Entry::Mounted { generation: current, animation: Some(animation), .. }) if *current == generation && animation.phase() == Phase::Exit)
+                    .then(|| entries.remove(&display))
+                    .flatten()
+            };
+            if removed.is_some() {
+                window.remove_window();
+            }
+        } else if running {
+            let weak = Rc::downgrade(self);
+            if let Some(Entry::Mounted {
+                generation: current,
+                animation: Some(animation),
+                ..
+            }) = self.entries.borrow_mut().get_mut(&display)
+                && *current == generation
+            {
+                animation.set_frame_pending(true);
+                window.on_next_frame(move |window, app| {
+                    if let Some(controller) = weak.upgrade() {
+                        controller.advance_frame(display, generation, window, app);
+                    }
+                });
+            }
+        }
     }
 }
 
@@ -389,6 +700,7 @@ pub(super) fn register<V: Render + 'static>(
     runtime: &Rc<RuntimeInner>,
     config: LayerSurfaceConfig,
     timeout: Duration,
+    animation_plan: Option<AnimationPlan>,
     mut factory: impl FnMut(
         SurfaceInstanceHandle,
         &mut Window,
@@ -397,6 +709,9 @@ pub(super) fn register<V: Render + 'static>(
     + 'static,
     cx: &mut App,
 ) -> Result<DynamicSurfaceHandle, ShellError> {
+    if let Some(plan) = animation_plan {
+        crate::AnimationRunner::new(plan).map_err(ShellError::setup)?;
+    }
     if runtime.stopped.get() {
         return Err(ShellError::setup(
             super::runtime::SurfaceRegistrationError::Closed,
@@ -457,6 +772,7 @@ pub(super) fn register<V: Render + 'static>(
         runtime: Rc::downgrade(runtime),
         config,
         timeout,
+        animation_plan,
         factory: RefCell::new(Some(factory)),
         next_generation: Cell::new(0),
         entries: RefCell::new(HashMap::new()),
@@ -569,6 +885,7 @@ mod tests {
                 generation,
                 active: Rc::clone(&active),
                 task: None,
+                animation: None,
             },
         );
         let task_controller = Rc::clone(&controller);
@@ -591,6 +908,73 @@ mod tests {
             size: Size::new(px(width), px(height)),
             options: LayerShellOptions::default(),
         }
+    }
+
+    fn test_animation_plan() -> AnimationPlan {
+        let timing = Some(crate::PlanTiming::Easing {
+            duration: Duration::from_millis(100),
+            curve: crate::EasingCurve::Linear,
+        });
+        AnimationPlan {
+            opacity: Some(crate::Channel {
+                enter: Some(crate::PropertyAnimation {
+                    endpoints: [0.0, 1.0],
+                    timing,
+                }),
+                exit: Some(crate::PropertyAnimation {
+                    endpoints: [1.0, 0.0],
+                    timing,
+                }),
+            }),
+        }
+    }
+
+    #[test]
+    fn staged_display_generations_sample_independent_animation_state() {
+        let mut cx = TestAppContext::single();
+        let instances = Rc::new(RefCell::new(Vec::new()));
+        let captured = Rc::clone(&instances);
+        let (runtime, controller, first, second) = cx.update(|cx| {
+            let runtime = Shell::attach(cx, |_, _| Ok(())).unwrap();
+            runtime
+                .register_animated_dynamic_layer_surface(
+                    config(20., 20.),
+                    Duration::from_secs(5),
+                    test_animation_plan(),
+                    move |instance, _, cx| {
+                        captured.borrow_mut().push(instance);
+                        Ok(cx.new(|_| gpui::EmptyView))
+                    },
+                    cx,
+                )
+                .unwrap();
+            let controller = Rc::clone(&runtime.0.dynamic_surfaces.borrow()[0]);
+            let first = DisplayId::new(501);
+            let second = DisplayId::new(502);
+            stage_and_create(Rc::clone(&controller), first, cx);
+            stage_and_create(Rc::clone(&controller), second, cx);
+            (runtime, controller, first, second)
+        });
+        cx.run_until_parked();
+
+        assert_eq!(instances.borrow().len(), 2);
+        assert_eq!(instances.borrow()[0].display_id(), first);
+        assert_eq!(instances.borrow()[1].display_id(), second);
+        assert_eq!(instances.borrow()[0].animation_sample().opacity, Some(0.0));
+        assert_eq!(instances.borrow()[1].animation_sample().opacity, Some(0.0));
+        let first_window = match controller.entries.borrow().get(&first) {
+            Some(Entry::Mounted { window, .. }) => *window,
+            _ => unreachable!("first staged display should mount"),
+        };
+        cx.executor().advance_clock(Duration::from_millis(50));
+        cx.update_window(first_window, |_, window, cx| {
+            assert_eq!(window.simulate_next_frame(cx), 1);
+        })
+        .unwrap();
+        assert!((instances.borrow()[0].animation_sample().opacity.unwrap() - 0.5).abs() < 0.001);
+        assert_eq!(instances.borrow()[1].animation_sample().opacity, Some(0.0));
+        cx.update(|cx| runtime.shutdown(cx));
+        cx.run_until_parked();
     }
 
     #[test]

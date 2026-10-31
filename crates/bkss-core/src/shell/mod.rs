@@ -2,6 +2,7 @@ mod binding;
 mod dynamic_surface_runtime;
 mod error;
 mod runtime;
+mod surface_animation;
 mod surface_runtime;
 mod surface_window;
 
