@@ -17,7 +17,7 @@ pub use glass::{
 pub use reactive::{Reactive, ReactiveSubscription, SourceState, State};
 pub use resource::{
     ResourceAcquireError, ResourceLease, ResourceScope, Source, SourceDescriptor, SourceFailure,
-    SourceFailurePhase, SourcePublisher,
+    SourceFailurePhase, SourcePublisher, ThreadPublishError, ThreadPublisher, ThreadPublisherGuard,
 };
 pub use shell::{
     DynamicSurfaceHandle, MountedBinding, RuntimeHandle, Shell, ShellError, SurfaceInstanceHandle,
