@@ -1,14 +1,14 @@
 pre-commit:
   parallel: true
   commands:
-    format:
+    ui-format:
       root: crates/bkss-ui
       glob:
         - "crates/bkss-ui/*.rs"
         - "crates/bkss-ui/**/*.rs"
       run: cargo fmt -- {staged_files}
       stage_fixed: true
-    lint:
+    ui-lint:
       root: crates/bkss-ui
       glob:
         - "crates/bkss-ui/*.rs"
@@ -18,7 +18,7 @@ pre-commit:
 
 pre-push:
   commands:
-    test:
+    ui-test:
       glob:
         - "crates/bkss-ui/*.rs"
         - "crates/bkss-ui/**/*.rs"

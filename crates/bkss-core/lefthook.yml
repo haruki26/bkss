@@ -1,14 +1,14 @@
 pre-commit:
   parallel: true
   commands:
-    format:
+    core-format:
       root: crates/bkss-core
       glob:
         - "crates/bkss-core/*.rs"
         - "crates/bkss-core/**/*.rs"
       run: cargo fmt -- {staged_files}
       stage_fixed: true
-    lint:
+    core-lint:
       root: crates/bkss-core
       glob:
         - "crates/bkss-core/*.rs"
@@ -18,7 +18,7 @@ pre-commit:
 
 pre-push:
   commands:
-    test:
+    core-test:
       glob:
         - "crates/bkss-core/*.rs"
         - "crates/bkss-core/**/*.rs"
