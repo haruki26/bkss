@@ -5,17 +5,14 @@
 - `src/lib.rs`: 非公開の feature module を宣言し、公開 API を再公開する。
 - `src/animation/`: animation の実行記述、時刻を受け取る runner、補間・spring 計算。
 - `src/reactive/`: State／Reactive、通知・購読、派生値。
-- `src/resource/`: Source、activation の共有、scope／lease、停止と failure。
-- `src/resource/thread_publisher.rs`: Send payload の配送と UI thread 上の source publication への変換。bridge guard が配送 task の寿命を管理する。
+- `src/resource/`: Source、activation の共有、scope／lease、thread 間の更新配送、停止と failure。
 - `src/glass/`: style の検証・解決、reactive な描画更新、GPUI 描画。
 - `src/surface/`: 接続前の宣言、display 選択・readiness、低レベル設定とエラー。
 - `src/shell/`: runtime と binding、resource／window の lifetime 管理、animation のスケジューリング。
-- `src/shell/surface_runtime.rs`: 起動時の surface 宣言の実行・待機・cleanup。
-- `src/shell/dynamic_surface_runtime.rs`: display ごとの動的 surface の generation、open／close、animation と mount lifetime の接続。
-- `src/shell/surface_window.rs`: window 作成設定と除去・遅延除去の共通処理。
-- `src/shell/surface_animation.rs`: runner と surface の接続、sample と completion の管理。
 - `tests/`: 公開 API の統合テスト。
 - `examples/`: 利用例・実環境の動作確認。
+
+`src/surface/` は接続前の宣言・設定、`src/shell/surface/` は surface の生成・終了などの実行機構を担う。
 
 ## 依存と所有
 
