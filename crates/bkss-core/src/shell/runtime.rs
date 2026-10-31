@@ -4,7 +4,7 @@ use crate::{
     SourceFailure,
     surface::{LayerSurfaceDeclaration, SurfaceDescriptor, SurfaceError},
 };
-use gpui::{AnyWindowHandle, App, AppContext, AsyncApp, Render, Subscription};
+use gpui::{AnyWindowHandle, App, AsyncApp, Render, Subscription};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -16,6 +16,7 @@ pub(super) struct RuntimeInner {
     pub(super) stopped: Cell<bool>,
     pub(super) surfaces: RefCell<Vec<AnyWindowHandle>>,
     pub(super) surface_works: RefCell<Vec<Rc<super::surface_runtime::SurfaceWork>>>,
+    pub(super) dynamic_surfaces: RefCell<Vec<Rc<super::dynamic_surface_runtime::Controller>>>,
     app: AsyncApp,
     quit_host_on_failure: bool,
     host_quit_requested: Cell<bool>,
@@ -42,6 +43,7 @@ impl RuntimeHandle {
             stopped: Cell::new(false),
             surfaces: RefCell::new(Vec::new()),
             surface_works: RefCell::new(Vec::new()),
+            dynamic_surfaces: RefCell::new(Vec::new()),
             app: cx.to_async(),
             quit_host_on_failure,
             host_quit_requested: Cell::new(false),
@@ -107,6 +109,25 @@ impl RuntimeHandle {
         super::surface_runtime::mount_layer_surface(&self.0, declaration, cx)
     }
 
+    pub fn register_dynamic_layer_surface<V: Render + 'static>(
+        &self,
+        config: crate::LayerSurfaceConfig,
+        readiness_timeout: std::time::Duration,
+        factory: impl FnMut(
+            crate::SurfaceInstanceHandle,
+            &mut gpui::Window,
+            &mut App,
+        ) -> Result<gpui::Entity<V>, ShellError>
+        + 'static,
+        cx: &mut App,
+    ) -> Result<crate::DynamicSurfaceHandle, ShellError> {
+        super::dynamic_surface_runtime::register(&self.0, config, readiness_timeout, factory, cx)
+    }
+
+    pub fn downgrade(&self) -> WeakRuntimeHandle {
+        WeakRuntimeHandle(Rc::downgrade(&self.0))
+    }
+
     /// Stops this runtime's resources and owned surfaces. An attached runtime
     /// leaves the host app running; [`Shell::run`](super::Shell::run) owns and
     /// requests app quit for runtimes it starts. GPUI's existing last-window
@@ -140,6 +161,15 @@ impl RuntimeHandle {
     }
 }
 
+#[derive(Clone)]
+pub struct WeakRuntimeHandle(std::rc::Weak<RuntimeInner>);
+
+impl WeakRuntimeHandle {
+    pub fn upgrade(&self) -> Option<RuntimeHandle> {
+        self.0.upgrade().map(RuntimeHandle)
+    }
+}
+
 #[derive(Debug)]
 pub(super) enum SurfaceRegistrationError {
     Closed,
@@ -159,16 +189,14 @@ impl Drop for RuntimeInner {
     fn drop(&mut self) {
         self.scope.shutdown();
         super::surface_runtime::drop_surface_works(self.surface_works.get_mut());
-        let handles = std::mem::take(self.surfaces.get_mut());
-        if !handles.is_empty() {
-            let app = self.app.clone();
-            app.spawn(async move |cx| {
-                for handle in handles {
-                    let _ = cx.update_window(handle, |_, window, _| window.remove_window());
-                }
-            })
-            .detach();
-        }
+        super::dynamic_surface_runtime::drop_controllers(
+            self.dynamic_surfaces.get_mut(),
+            &self.app,
+        );
+        super::surface_window::remove_windows_later(
+            &self.app,
+            std::mem::take(self.surfaces.get_mut()),
+        );
     }
 }
 pub(super) fn stop_runtime(inner: &RuntimeInner, cx: &mut App) {
@@ -177,9 +205,10 @@ pub(super) fn stop_runtime(inner: &RuntimeInner, cx: &mut App) {
     }
     inner.scope.shutdown();
     super::surface_runtime::stop_surface_works(inner);
+    super::dynamic_surface_runtime::stop_controllers(inner, cx);
     let handles = std::mem::take(&mut *inner.surfaces.borrow_mut());
     for handle in handles {
-        super::surface_runtime::remove_surface(cx, handle);
+        super::surface_window::remove_window(cx, handle);
     }
 }
 

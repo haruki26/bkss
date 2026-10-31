@@ -4,7 +4,7 @@
 
 数値で「初期値」「default」と記した箇所は調整可能な暫定値であり、特に視覚値は実行・視覚確認で調整してよい。公開される挙動と受け入れ条件は、API 名や内部実装の未確定を理由に変更しない。GPUI/Wayland の実現性確認と実装状況は開発者向け資料に分離する。
 
-初期 scale の保証は見た目の効果に限る。任意 subtree の入力領域、selection、caret/IME の変換は初期要件ではない。この範囲は seat ごとの keyboard 入力先、解放、復帰の要件を変更しない。
+初期 scale の保証は見た目の効果に限る。任意 subtree の入力領域、selection、caret/IME の変換は初期要件ではない。Overlay の keyboard 契約は single Wayland seat に限定し、OS/compositor focus の制御や復帰は保証しない。
 
 ## 範囲と境界
 
@@ -47,11 +47,13 @@ Shell の runtime entry point は core に置き、汎用の低レベル surface
 
 ### Overlay（ui widget）
 
-外部 handle が display を指定して open/close を要求する。同じ定義でも display ごとに content factory、lifecycle、visibility を独立に持つ。focus なしと keyboard-interactive を呼び出し側が明示選択する。keyboard arbitration は seat ごとに、genuine open された overlay が mount/enter 開始時から input request 資格を得る。最後に開かれた eligible interactive overlay が選ばれ、非 interactive overlay は参加しない。close または exit 開始時に資格を解放し、前の eligible な表示中 overlay に戻す。redundant open は順序を変えず no-op とする。これは BKSS の input request 選択であり、OS/compositor focus を保証するものではない。
+`OverlayDefinition` は inert な設定で、display ごとの fallible content factory は mount 時に一度実行する。公開 API は `OverlayRuntimeHandleExt::mount_overlay(definition, factory, cx)` と、display 指定の `OverlayHandle::open(display, cx)` / `close(display, cx)` である。外部 handle は runtime を延命しない。core runtime は動的 registration、display readiness、generation、pending/mounted surface の所有・cleanup を担い、ui は definition、display-local state、rendering を担う。mounted content が resource binding/lease を所有し、同じ runtime scope 内の resource sharing と最後の lease での停止は既存契約に従う。
 
-enter 中の eligibility は mount/enter 開始時に与える。enter 中の overlay も表示対象である。Escape でも閉じられる。close 後は exit animation が完了するまで surface/component を破棄しない。exit 定義がない場合は即時 close とする。
+同じ definition でも core runtime が display ごとの lifecycle と visibility を独立に管理し、各 display の content factory を mount 時に実行する。`KeyboardFocus::None | Interactive` は definition 作成時に明示する。Interactive は surface 作成時の `OnDemand` を要求し、None は `None` で作成する。初期契約は single seat であり、BKSS は overlay 間の keyboard arbitration、seat ごとの ordering、native activation/focus、focus restoration を行わない。compositor が実際の focus と同一 layer 内の visual order を決める。ユーザー click は通常の入力であり、redundant open は no-op で surface を raise しない。
 
-open の繰り返しは一度だけ active になること、close の繰り返しは安全な no-op になることを要求する。exit 中の reopen は現在の opacity/scale 値から再 target し、endpoint へ jump しない。spring では可能な限り現在 velocity も引き継ぐ。古い exit completion が新しい表示を破棄してはならない。display ごとの visibility/content teardown と runtime-wide resource sharing は独立に検証する。
+Escape は実際に Escape event を受け取った mounted `Interactive` instance だけを閉じる。None instance への Escape 配達は約束しない。現在の Overlay scope は animation を含まず、close は即時にその display instance を閉じる。一般の UI animation/lifecycle 要件（CF-05 等）は別の将来・対応範囲として維持する。
+
+open は display ごとに `Closed | Pending | Mounted` lifecycle を持つ。repeated open は pending/mounted instance を activate、raise、recreate しない。pending close は factory を呼ばず取消し、後の genuine open は新 generation で開始する。stale factory result はその正確な旧 window だけを回収し、callback 後に generation/runtime を再確認する。対象 instance close はその view/surface と lease のみ解放し、他 display や runtime の別 surface を閉じない。runtime shutdown/fatal は pending を含む全 runtime-owned surface を cleanup し、fatal primary cause と attach host の所有権を維持する。display ごとの visibility/content teardown と runtime-wide resource sharing は独立に検証する。
 
 ## Geometry / Input API
 
@@ -82,27 +84,31 @@ BottomBar は display 下端に anchor する常設 layer-shell surface であ�
 ### Overlay
 
 - **Placement**
-  - default は display 中央。
+  - default は現在の configured local viewport の中央。
   - explicit anchor + offset も最小 API で提供する。anchor は `Top | Bottom | Left | Right | Center` の組み合わせ、offset は logical units。
+  - native request は display ごとの独立 layer-shell surface、四辺 anchor、requested size `0 × 0`、`exclusive_zone = 0` とする。配置・clamp・clip の基準は実際に configure された window-local viewport と display scale であり、global usable bounds/origin は利用可能と仮定しない。
 - **Oversized content**
-  - Overlay は選択した display の使用可能領域（usable bounds）内に viewport を持つ。viewport を超える content は clip する。利用者は明示的に scroll container を選べる。自動的な文字サイズ縮小（typography scaling）は行わない。賢い reposition は実装しない。
+  - viewport を超える content はその configured local viewport 内で clip する。利用者は明示的に scroll container を選べる。自動的な文字サイズ縮小（typography scaling）や賢い reposition は行わない。
 - **Scale**
-  - 各 display の scale に応じて logical size を pixel size に変換し、clamp も pixel 換算後の bounds で行う。
+  - 各 display の scale に応じて logical size を pixel size に変換し、clamp は pixel 換算後の configured viewport bounds で行う。
+- **Reservation / BottomBar relation**
+  - Overlay は exclusive zone を予約しない。予約付き BottomBar を避ける配置が必要な場合は、Overlay を開く前に bar の初期 allocation/reservation が安定していることを要求する。
+  - compositor の layer order は物理的に BottomBar の背後へ積む保証ではない。同一 layer の順序は compositor が決める。非予約 bar は Overlay に隠れたり入力を妨げられたりし得る。予約の後続変化に対する adaptive relayout/resizing は保証しない。実際に viewport resize event を受けた場合は、その時点の viewport に追従する。
 
 ### Input modes
 
 - **Keyboard mode**
-  - `None`: keyboard focus を要求しない。これは「クリックスルー（ポインタクリックを下へ通す）」を意味しない。bar 上のボタン等は通常通りポインタ応答する。
-  - `Interactive`: keyboard focus を要求し、seat ごとの keyboard arbitration に参加する。
+  - `None`: surface creation mode `None` を使い、keyboard input を要求しない。keyboard 配達・Escape は約束しない。pointer click-through の指定でもない。
+  - `Interactive`: surface creation mode `OnDemand` を使う。これは BKSS の keyboard arbitration や OS activation/focus 成功保証ではない。実際の focus は compositor が決め、focus 取得・復帰を理由とする surface 再作成はしない。
 
 - **Outside-close backdrop（pointer interactive overlay）**
   - default OFF。opt-in のみ。
-  - ON の場合、overlay content の背後に full-display の入力層を作成し、そこへのポインタダウンで close を発行する。そのクリックは backdrop で消費し、背後のアプリケーションには転送しない。
-  - この backdrop は keyboard focus を取得しない。parent の keyboard focus 管理と重複取得しない。
-  - default OFF の場合は、透明な full-display 入力層を作らず、他アプリのクリックを妨害しない。
+  - ON の場合、backdrop は content と同じ root/surface に描画し、入力領域は configured local viewport 内で content の外側に限定する。そこへの pointer down は close を発行して消費し、背後のアプリケーションには転送しない。display 外側や local viewport 外側を捕捉しない。
+  - backdrop は別 surface/focus owner ではなく、独立した keyboard focus/arbitration を持たない。
+  - default OFF の場合は backdrop paint/input を作らず、input region は content のみ。透明な full-display input layer は作らない。
 
 - **Stacking**
-  - backdrop は target overlay content の背後、BottomBar の背後に積む。bar や backdrop が不要なグローバル入力ブロックにならないよう、各 layer の input region を必要最小限に保つ。
+  - backdrop と content は同じ root/surface で content 外側を backdrop paint/input とする。別 surface の物理 stacking、BottomBar より背後の配置、同一 layer order は保証しない。input region は上述の local viewport に限定する。
 
 ### 入力配達の受け入れ
 
@@ -117,9 +123,10 @@ Reactive<A>.map(f) -> Reactive<B>
 Reactive<A>.combine(Reactive<B>, f) -> Reactive<C>
 SourceState<T>              // 取得前 / 取得済みの値を表す状態
 SourceDescriptor<T>         // 宣言時には接続せず、利用開始時に接続
-OverlayDefinition::content(factory)
-OverlayHandle::open(display)
-OverlayHandle::close(display)
+OverlayHandle::open(display, cx) -> Result<(), SurfaceRequestError>
+OverlayHandle::close(display, cx) -> Result<(), SurfaceRequestError>
+OverlayDefinition::new(keyboard: KeyboardFocus)
+OverlayRuntimeHandleExt::mount_overlay(definition, factory, cx) -> Result<OverlayHandle, ShellError>
 Shell::run(...) -> Result<(), ShellError>
 
 BottomBarWidth::FullDisplayWidth
@@ -239,7 +246,7 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 | CF-01 | core/ui 境界 | core + ui の foundation が特定 integration なしで build/API 検証でき、ui が core に依存し core から ui へ依存しない |
 | CF-02 | Glass | blur の有無にかかわらず静的 Glass が描画される |
 | CF-03 | BottomBar | 起動時の複数 display に layer-shell surface、logical-height の予約、非フォーカスを確認できる |
-| CF-04 | Overlay | display 別 open/close、独立 visibility/content/lifecycle、focus mode 選択、Escape close を確認できる |
+| CF-04 | Overlay | display 別 open/close、独立 visibility/content/lifecycle、definition 時の keyboard mode 選択、実際に配達された Escape による Interactive instance close を確認できる |
 | CF-05 | lifecycle | exit 完了前に破棄せず、exit なしは即時 close、反復要求、現在値からの retarget、stale completion 防止をテストできる |
 | CF-06 | animation | opt-in の opacity/scale を fake clock で検証し、未指定時は即時状態になる |
 | CF-07 | reactive | test source の update、unsubscribe、resource sharing、cleanup を検証でき、最後の consumer 後に停止し次回利用で再取得する |
@@ -247,13 +254,13 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 | CF-09 | fatal integration failure | acquisition/subscription の開始時・開始後 failure が原因付きで伝播し、Shell 全体を終了する。cleanup は重複せず、shutdown 中に別 backend を開始しない |
 | CF-10 | 初回取得と代替表示 | 遅延する test source でも Shell が表示され、取得前の代替表示から取得済みの表示へ更新される。空一覧との区別と再取得時の状態も検証できる |
 | CF-11 | State/Reactive | State write、read-only Reactive、loading→ready、map/combine propagation を検証できる |
-| CF-12 | display/focus | 二 display の独立 visibility/content teardown、共有 resource、seat ごとの keyboard ordering、close/exit-start の eligibility release を検証できる。OS focus は別の実機検証とする |
+| CF-12 | display / single-seat keyboard | 二 display の独立 visibility/content teardown、共有 resource、None/Interactive creation mode と actual delivered-key recipient を検証できる。BKSS seat ordering/arbitration、native activation/focus restoration は保証しない |
 | CF-13 | State/activation | ready 初期値、clone handle による同一 cell 更新、停止後 activation の stale update 破棄を検証できる |
 | CF-14 | Shell 終了 | fatal cause/context を `Result<(), ShellError>` で返し、library が process exit せず、cleanup 中に decorative animation を待たないことを検証できる |
 | CF-15 | BottomBar geometry | 二つの monitor size / 異なる logical scale で、reserve ON/OFF、FullDisplayWidth/FloatingContentWidth、logical margins、bottom anchor、shadow を exclusive zone に含めないことを検証できる |
-| CF-16 | Overlay geometry | display 中央 default、explicit anchor/offset、usable bounds 内 viewport への clip、明示的 scroll container、自動 shrink/typography scaling なしを検証できる |
-| CF-17 | Input modes | keyboard `None` がクリックスルーではなく、`Interactive` と区別できる。outside-close backdrop が opt-in で default OFF、ON 時はクリックを消費して背後へ転送せず、backdrop が keyboard focus を取得しないことを検証できる。bar の pointer hit area は visual Glass 領域を意図し、透明 allocation 部の横取りは実現性ギャップとして記録する |
-| CF-18 | 入力配達の検証ゲート | GPUI/Wayland の input-region / layer surface 機能を実装前に検証し、未検証の機能は保証範囲として主張しない。bar と overlay のポインタ・キーボード配達を検証項目として記録する |
+| CF-16 | Overlay geometry | configured local viewport 中央 default、explicit anchor/offset、configured local viewport/scale による pixel-clamp と clip、明示的 scroll container、自動 shrink/typography scaling なしを検証できる。global usable bounds は前提にしない |
+| CF-17 | Input modes | None/Interactive creation semantics と actual key delivery を区別する。backdrop opt-in/default OFF、ON 時 local viewport 内 content-exterior click を消費し app に転送せず、OFF 時 input region が content のみであることを検証できる。native focus/activation、outside-viewport capture、BottomBar behind-order は保証しない。既存 BottomBar の visual Glass hit area intent と、透明 allocation が input を横取りしうる gap は別途記録する |
+| CF-18 | 入力配達の検証ゲート | 実装前に GPUI/Wayland の input-region/layer-surface capability と probe evidence を確認し、source/probe だけで native acceptance を主張しない。実装後は actual native example で BottomBar と Overlay の pointer/keyboard delivery を観察・記録する。headless/fake test は native 配達の証拠としない |
 | CF-19 | Glass style contract | hover/pressed/focus の外観変化はユーザーが明示指定した場合のみ適用され、Glass 自体は自動効果を持たない。base -> hover -> pressed の順に partial override し、focus は最後に独立適用する。Glass style があるだけで container が focusable/clickable にならない。opacity と tint alpha の乗算ルールを検証できる |
 | CF-20 | animation timing | Easing と Spring は mutually exclusive。easing default は 160ms ease-out、duration 0 は即時。spring は stiffness/damping/mass の物理パラメータを持ち、duration を silently override しないことを検証できる |
 | CF-21 | spring convergence | settle は正規化位置誤差・速度両方 eps = 0.001 未満、距離 0 かつ速度 0 のときのみ即時 completed、正規化 span は max(|original span|, 1.0)、max elapsed 2000ms per genuine request で endpoint snap + 単一 completion、redundant open は max をリセットせず stale completion は破棄しない、30/60/144Hz で同一 elapsed サンプリングの tolerance 内一致を検証できる |

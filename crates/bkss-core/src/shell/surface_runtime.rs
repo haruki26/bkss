@@ -10,10 +10,7 @@ use crate::{
         SurfaceDescriptor, SurfaceError,
     },
 };
-use gpui::{
-    AnyWindowHandle, App, AppContext, Bounds, Render, Task, WindowBackgroundAppearance,
-    WindowBounds, WindowKind, WindowOptions, layer_shell::LayerShellOptions, px,
-};
+use gpui::{AnyWindowHandle, App, Bounds, Render, Task, layer_shell::LayerShellOptions, px};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -109,23 +106,17 @@ pub(super) fn mount_surface<V: Render + 'static>(
                     };
                     let opened = cx
                         .open_window(
-                            WindowOptions {
-                                display_id: Some(display_id),
-                                window_bounds: Some(WindowBounds::Windowed(Bounds {
-                                    origin: gpui::point(px(0.), px(0.)),
-                                    size,
-                                })),
-                                focus: false,
-                                window_background: WindowBackgroundAppearance::Transparent,
-                                kind: WindowKind::LayerShell(LayerShellOptions {
+                            super::surface_window::layer_window_options(
+                                display_id,
+                                size,
+                                LayerShellOptions {
                                     namespace: SURFACE_NAMESPACE.to_owned(),
                                     exclusive_zone: Some(px(0.)),
                                     keyboard_interactivity:
                                         gpui::layer_shell::KeyboardInteractivity::None,
                                     ..Default::default()
-                                }),
-                                ..Default::default()
-                            },
+                                },
+                            ),
                             |window, cx| {
                                 window.set_input_region(Some(&[]));
                                 content(window, cx)
@@ -278,17 +269,11 @@ pub(super) fn mount_layer_surface<V: Render + 'static>(
                 options.keyboard_interactivity = gpui::layer_shell::KeyboardInteractivity::None;
                 let opened = cx
                     .open_window(
-                        WindowOptions {
-                            display_id: Some(display_id),
-                            window_bounds: Some(WindowBounds::Windowed(Bounds {
-                                origin: gpui::point(px(0.), px(0.)),
-                                size: config.size,
-                            })),
-                            focus: false,
-                            window_background: WindowBackgroundAppearance::Transparent,
-                            kind: WindowKind::LayerShell(options),
-                            ..Default::default()
-                        },
+                        super::surface_window::layer_window_options(
+                            display_id,
+                            config.size,
+                            options,
+                        ),
                         |window, app| {
                             window.set_input_region(Some(&[]));
                             (factory.content)(display_id, window, app)
@@ -331,10 +316,6 @@ pub(super) fn mount_layer_surface<V: Render + 'static>(
     Ok(())
 }
 
-pub(super) fn remove_surface(cx: &mut impl AppContext, handle: AnyWindowHandle) {
-    let _ = cx.update_window(handle, |_, window, _| window.remove_window());
-}
-
 fn valid_layer_config(config: &LayerSurfaceConfig) -> bool {
     [config.size.width, config.size.height]
         .into_iter()
@@ -353,7 +334,7 @@ pub(super) fn finish_surface_open(
 ) {
     match opened {
         Ok(handle) if !inner.stopped.get() => inner.surfaces.borrow_mut().push(handle),
-        Ok(handle) => remove_surface(cx, handle),
+        Ok(handle) => super::surface_window::remove_window(cx, handle),
         Err(cause) => record_surface_failure(
             inner,
             SurfaceError::Creation {

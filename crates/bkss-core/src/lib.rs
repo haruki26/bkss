@@ -13,7 +13,10 @@ pub use resource::{
     ResourceAcquireError, ResourceLease, ResourceScope, Source, SourceDescriptor, SourceFailure,
     SourceFailurePhase, SourcePublisher,
 };
-pub use shell::{MountedBinding, RuntimeHandle, Shell, ShellError};
+pub use shell::{
+    DynamicSurfaceHandle, MountedBinding, RuntimeHandle, Shell, ShellError, SurfaceInstanceHandle,
+    SurfaceRequestError, WeakRuntimeHandle,
+};
 pub use surface::{
     DEFAULT_DISPLAY_READINESS_TIMEOUT, DisplaySelection, LayerSurfaceConfig,
     LayerSurfaceDeclaration, LayerSurfaceError, SurfaceDescriptor, SurfaceDescriptorError,

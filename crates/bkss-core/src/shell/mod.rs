@@ -1,11 +1,16 @@
 mod binding;
+mod dynamic_surface_runtime;
 mod error;
 mod runtime;
 mod surface_runtime;
+mod surface_window;
 
 pub use binding::MountedBinding;
+pub use dynamic_surface_runtime::{
+    DynamicSurfaceHandle, SurfaceInstanceHandle, SurfaceRequestError,
+};
 pub use error::ShellError;
-pub use runtime::RuntimeHandle;
+pub use runtime::{RuntimeHandle, WeakRuntimeHandle};
 
 use gpui::App;
 
