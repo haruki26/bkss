@@ -62,7 +62,8 @@ impl<V: Render + 'static> Render for OverlayView<V> {
                     let _ = instance.close(cx);
                 });
         }
-        let content = content_frame(&self.content, &self.glass, limit, cx);
+        let opacity = self.instance.animation_sample().opacity.unwrap_or(1.0);
+        let content = content_frame(&self.content, &self.glass, limit, opacity, cx);
         root.child(OverlayLayout {
             content,
             geometry: self.geometry,
@@ -77,11 +78,13 @@ fn content_frame<V: Render + 'static>(
     content: &Entity<V>,
     glass: &Glass,
     limit: Size<Pixels>,
+    opacity: f32,
     cx: &impl AppContext,
 ) -> AnyElement {
     // This ordinary container stops bubbling, after the user's own handlers.
     div()
         .id("bkss-overlay-content")
+        .opacity(opacity)
         .flex()
         .flex_col()
         .max_w(limit.width)
@@ -275,6 +278,7 @@ mod tests {
                         &self.content,
                         &self.glass,
                         self.geometry.limit(viewport, window.scale_factor()),
+                        1.0,
                         cx,
                     ),
                     geometry: self.geometry,
@@ -447,6 +451,7 @@ mod tests {
         fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
             let mut content = div()
                 .id("user-content")
+                .bg(gpui::rgb(0xffffff))
                 .w(px(100.))
                 .h(px(80.))
                 .flex_shrink_0()
@@ -494,50 +499,60 @@ mod tests {
         let records = Rc::new(RefCell::new(Vec::new()));
         let captured = records.clone();
         let surface = cx.update(|cx| {
-            runtime
-                .register_dynamic_layer_surface(
-                    definition.surface_config(),
+            let config = definition.surface_config();
+            let plan = definition
+                .animation
+                .map(Animation::compile)
+                .transpose()
+                .unwrap();
+            let factory =
+                move |instance: SurfaceInstanceHandle, window: &mut Window, cx: &mut App| {
+                    let clicks = Rc::new(Cell::new(0));
+                    let keys = Rc::new(Cell::new(0));
+                    let content = cx.new(|cx| {
+                        let focus = child_focus.then(|| cx.focus_handle());
+                        if let Some(focus) = &focus {
+                            focus.focus(window, cx);
+                        }
+                        EventContent {
+                            clicks: clicks.clone(),
+                            keys: keys.clone(),
+                            focus,
+                            consume_escape,
+                            scroll,
+                            scroll_handle: gpui::ScrollHandle::new(),
+                        }
+                    });
+                    let view = cx.new(|cx| {
+                        OverlayView::new(&definition, content.clone(), instance.clone(), window, cx)
+                    });
+                    captured.borrow_mut().push(Events {
+                        window: window.window_handle(),
+                        instance: instance.clone(),
+                        clicks,
+                        keys,
+                        child_focus: content.read(cx).focus.clone(),
+                        scroll_handle: content.read(cx).scroll_handle.clone(),
+                        observed: view.read(cx).observed.clone(),
+                    });
+                    Ok(view)
+                };
+            match plan {
+                Some(plan) => runtime.register_animated_dynamic_layer_surface(
+                    config,
                     Duration::from_secs(5),
-                    move |instance, window, cx| {
-                        let clicks = Rc::new(Cell::new(0));
-                        let keys = Rc::new(Cell::new(0));
-                        let content = cx.new(|cx| {
-                            let focus = child_focus.then(|| cx.focus_handle());
-                            if let Some(focus) = &focus {
-                                focus.focus(window, cx);
-                            }
-                            EventContent {
-                                clicks: clicks.clone(),
-                                keys: keys.clone(),
-                                focus,
-                                consume_escape,
-                                scroll,
-                                scroll_handle: gpui::ScrollHandle::new(),
-                            }
-                        });
-                        let view = cx.new(|cx| {
-                            OverlayView::new(
-                                &definition,
-                                content.clone(),
-                                instance.clone(),
-                                window,
-                                cx,
-                            )
-                        });
-                        captured.borrow_mut().push(Events {
-                            window: window.window_handle(),
-                            instance: instance.clone(),
-                            clicks,
-                            keys,
-                            child_focus: content.read(cx).focus.clone(),
-                            scroll_handle: content.read(cx).scroll_handle.clone(),
-                            observed: view.read(cx).observed.clone(),
-                        });
-                        Ok(view)
-                    },
+                    plan,
+                    factory,
                     cx,
-                )
-                .unwrap()
+                ),
+                None => runtime.register_dynamic_layer_surface(
+                    config,
+                    Duration::from_secs(5),
+                    factory,
+                    cx,
+                ),
+            }
+            .unwrap()
         });
         let display = cx.update(|cx| cx.displays()[0].id());
         cx.update(|cx| surface.open(display, cx).unwrap());
@@ -752,6 +767,71 @@ mod tests {
             let bounds = observed.content.unwrap();
             assert!((f32::from(bounds.size.width) - expected_width).abs() < 0.001);
             assert!((f32::from(bounds.size.height) - expected_height).abs() < 0.001);
+        }
+    }
+
+    #[test]
+    fn escape_and_backdrop_keep_the_animated_recipient_until_exit_finishes() {
+        use crate::{EasingCurve, Timing};
+        for escape in [false, true] {
+            let cx = TestAppContext::single();
+            let runtime = cx.update(|cx| bkss_core::Shell::attach(cx, |_, _| Ok(())).unwrap());
+            let definition = OverlayDefinition::new(KeyboardFocus::Interactive)
+                .with_pointer_dismiss(PointerDismiss::Backdrop)
+                .with_animation(
+                    Animation::exit(Timing::Easing {
+                        duration_ms: 1000,
+                        curve: EasingCurve::Linear,
+                    })
+                    .opacity(1., 0.),
+                )
+                .unwrap();
+            let (_, records) = open_events(&cx, &runtime, definition, false, false, false);
+            let window = records.borrow()[0].window;
+            let instance = records.borrow()[0].instance.clone();
+            let observed = records.borrow()[0].observed.clone();
+            let initial = observed.get();
+            let mut visual = VisualTestContext::from_window(window, &cx);
+            if escape {
+                visual.simulate_keystrokes("escape");
+            } else {
+                visual.simulate_mouse_down(
+                    point(px(10.), px(10.)),
+                    gpui::MouseButton::Left,
+                    gpui::Modifiers::none(),
+                );
+            }
+            cx.run_until_parked();
+            assert_eq!(cx.update(|cx| cx.windows().len()), 1);
+            cx.executor().advance_clock(Duration::from_millis(500));
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+            assert!((instance.animation_sample().opacity.unwrap() - 0.5).abs() < 0.001);
+            let quads = visual.update(|window, _| window.painted_quads());
+            assert_eq!(quads.len(), 3);
+            assert!(
+                (quads[0].background.as_solid().unwrap().a - 0.4).abs() < 0.001,
+                "backdrop must not fade"
+            );
+            assert!(
+                (quads[1].background.as_solid().unwrap().a - 0.125).abs() < 0.001,
+                "Glass tint shares the content wrapper"
+            );
+            assert!(
+                (quads[2].background.as_solid().unwrap().a - 0.5).abs() < 0.001,
+                "user content must fade with Glass"
+            );
+            assert_eq!(observed.get().input, initial.input);
+            assert_eq!(observed.get().content, initial.content);
+            cx.executor().advance_clock(Duration::from_millis(500));
+            visual.update(|window, cx| {
+                window.simulate_next_frame(cx);
+            });
+            cx.run_until_parked();
+            assert!(cx.update(|cx| cx.windows().is_empty()));
+            cx.update(|cx| runtime.shutdown(cx));
         }
     }
 }

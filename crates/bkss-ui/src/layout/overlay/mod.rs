@@ -1,5 +1,6 @@
 use std::{error::Error, fmt, time::Duration};
 
+use crate::animation::{Animation, AnimationError};
 use bkss_core::{
     DynamicSurfaceHandle, Glass, GlassState, GlassStyle, LayerSurfaceConfig, RuntimeHandle,
     ShellError, SurfaceInstanceHandle, SurfaceRequestError,
@@ -31,6 +32,7 @@ pub struct OverlayDefinition {
     pointer_dismiss: PointerDismiss,
     geometry: OverlayGeometry,
     style: GlassStyle,
+    animation: Option<Animation>,
 }
 
 impl OverlayDefinition {
@@ -41,6 +43,7 @@ impl OverlayDefinition {
             pointer_dismiss: PointerDismiss::Disabled,
             geometry: OverlayGeometry::default(),
             style: GlassStyle::default(),
+            animation: None,
         }
     }
 
@@ -61,6 +64,17 @@ impl OverlayDefinition {
     pub fn with_style(mut self, style: GlassStyle) -> Self {
         self.style = style;
         self
+    }
+
+    /// Adds opacity motion without starting a clock or mounting content.
+    /// Later assignments override the same phase, preserving other assignments.
+    pub fn with_animation(mut self, animation: Animation) -> Result<Self, AnimationError> {
+        let animation = self
+            .animation
+            .map_or(animation, |current| current.merge(animation));
+        animation.compile()?;
+        self.animation = Some(animation);
+        Ok(self)
     }
 
     fn surface_config(&self) -> LayerSurfaceConfig {
@@ -99,9 +113,10 @@ impl OverlayHandle {
 
 /// Additive extension; the existing BottomBar extension remains unchanged.
 pub trait OverlayRuntimeHandleExt {
-    /// Registers without opening a surface. Each genuine open after close calls
-    /// the fallible factory again. Capture descriptors and a weak runtime, not
-    /// mounted leases or a strong runtime; keep leases inside the returned view.
+    /// Registers without opening a surface. An open after a completed close calls
+    /// the fallible factory again; reopening during exit reuses the mounted content.
+    /// Capture descriptors and a weak runtime, not mounted leases or a strong
+    /// runtime; keep leases inside the returned view.
     ///
     /// Interactive Escape bubbles from content: a child may consume it; otherwise
     /// it dismisses only the receiving generation. No cross-overlay keyboard
@@ -130,15 +145,28 @@ impl OverlayRuntimeHandleExt for RuntimeHandle {
         cx: &mut App,
     ) -> Result<OverlayHandle, ShellError> {
         definition.geometry.validate().map_err(ShellError::setup)?;
-        self.register_dynamic_layer_surface(
-            definition.surface_config(),
-            Duration::from_secs(5),
-            move |instance, window, cx| {
-                let content = content(instance.display_id(), window, cx)?;
-                Ok(cx.new(|cx| OverlayView::new(&definition, content, instance, window, cx)))
-            },
-            cx,
-        )
+        let plan = definition
+            .animation
+            .map(Animation::compile)
+            .transpose()
+            .map_err(ShellError::setup)?;
+        let config = definition.surface_config();
+        let factory = move |instance: SurfaceInstanceHandle, window: &mut Window, cx: &mut App| {
+            let content = content(instance.display_id(), window, cx)?;
+            Ok(cx.new(|cx| OverlayView::new(&definition, content, instance, window, cx)))
+        };
+        match plan {
+            Some(plan) => self.register_animated_dynamic_layer_surface(
+                config,
+                Duration::from_secs(5),
+                plan,
+                factory,
+                cx,
+            ),
+            None => {
+                self.register_dynamic_layer_surface(config, Duration::from_secs(5), factory, cx)
+            }
+        }
         .map(OverlayHandle)
     }
 }
@@ -223,6 +251,59 @@ mod tests {
                     .source()
                     .and_then(|e| e.downcast_ref::<OverlayGeometryError>()),
                 Some(&OverlayGeometryError::InvalidMaximumSize)
+            );
+            assert!(cx.windows().is_empty());
+            runtime.shutdown(cx);
+        });
+    }
+
+    #[test]
+    fn animation_builder_is_inert_validated_and_merges_phases() {
+        use crate::Timing;
+        let definition = OverlayDefinition::new(KeyboardFocus::None)
+            .with_animation(Animation::transition(Timing::default()).opacity(0., 1.))
+            .unwrap()
+            .with_animation(Animation::exit(Timing::spring_default()).opacity(1., 0.2))
+            .unwrap();
+        let channel = definition
+            .animation
+            .unwrap()
+            .compile()
+            .unwrap()
+            .opacity
+            .unwrap();
+        assert_eq!(channel.enter.unwrap().endpoints, [0., 1.]);
+        assert_eq!(channel.exit.unwrap().endpoints, [1., 0.2]);
+        assert!(
+            OverlayDefinition::new(KeyboardFocus::None)
+                .with_animation(Animation::enter(Timing::default()).opacity(f32::NAN, 1.))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn invalid_animation_is_rejected_before_registration_or_factory() {
+        use crate::Timing;
+        let cx = TestAppContext::single();
+        cx.update(|cx| {
+            let runtime = bkss_core::Shell::attach(cx, |_, _| Ok(())).unwrap();
+            let mut definition = OverlayDefinition::new(KeyboardFocus::None);
+            definition.animation = Some(Animation::enter(Timing::default()).opacity(-1., 1.));
+            let error = runtime
+                .mount_overlay(
+                    definition,
+                    |_, _, _| -> Result<Entity<gpui::EmptyView>, ShellError> {
+                        panic!("invalid animation must not invoke the factory")
+                    },
+                    cx,
+                )
+                .err()
+                .unwrap();
+            assert_eq!(
+                error
+                    .source()
+                    .and_then(|error| error.downcast_ref::<AnimationError>()),
+                Some(&AnimationError::InvalidEndpoint)
             );
             assert!(cx.windows().is_empty());
             runtime.shutdown(cx);

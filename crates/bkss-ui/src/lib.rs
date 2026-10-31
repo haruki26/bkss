@@ -1,7 +1,9 @@
 //! Static shell widgets built on BKSS core and ordinary GPUI content.
 
+mod animation;
 mod layout;
 
+pub use animation::{Animation, AnimationError, EasingCurve, Timing};
 pub use bkss_core::DisplaySelection;
 pub use layout::{
     BottomBar, BottomBarAlignment, BottomBarGeometry, BottomBarGeometryError, BottomBarMargins,
