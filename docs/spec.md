@@ -4,7 +4,7 @@
 
 数値で「初期値」「default」と記した箇所は調整可能な暫定値であり、特に視覚値は実行・視覚確認で調整してよい。公開される挙動と受け入れ条件は、API 名や内部実装の未確定を理由に変更しない。GPUI/Wayland の実現性確認と実装状況は開発者向け資料に分離する。
 
-初期 scale の保証は見た目の効果に限る。任意 subtree の入力領域、selection、caret/IME の変換は初期要件ではない。Overlay の keyboard 契約は single Wayland seat に限定し、OS/compositor focus の制御や復帰は保証しない。
+Overlay の keyboard 契約は single Wayland seat に限定し、OS/compositor focus の制御や復帰は保証しない。
 
 ## 範囲と境界
 
@@ -12,7 +12,7 @@
 
 ## runtime 契約
 
-- runtime が update、subscription、redraw、animation の実行・スケジューリング、surface の cleanup を所有する。公開 animation 定義 API は ui に置き、ui の widget/surface wrapper が core runtime に接続する想定だが、橋渡しの内部型は未決定である。
+- runtime が update、subscription、redraw、animation の実行・スケジューリング、surface の cleanup を所有する。公開 animation 定義 API は ui に置き、ui の widget/surface wrapper が opacity の実行記述を core runtime に渡し、計算済みの sample を描画へ適用する。
 - resource は runtime のスコープで共有し、同じ resource を複数 active UI consumer が利用できる。source は最初の consumer で lazy に開始し、source handle の clone だけでは active consumer と数えない。
 - 最後の consumer が終了すると subscription/resource は停止する。exit animation 中の widget は unmount まで mounted なので購読を保持し、unmount 後に他の consumer がなければ停止する。次の activation は resource を再取得・再接続し、初期状態を得る。resource identity は source type + normalized configuration key で区別する。公開型や内部実装は未確定である。
 - 停止した activation から遅れて届く更新は activation identity で破棄し、再取得後の状態を壊さない。
@@ -27,7 +27,7 @@
 - 明示された State publication は毎回 dependent を更新し、等値による抑制はしない。UI の redraw は自然にまとめられてよい。複数 State の atomic transaction は約束せず、独自 graph も必要性が実証されるまで作らない。
 - pre-run の builder/source は inert descriptor とし、runtime-bound な State/entity は setup/mount で生成する。source handle の clone は consumer ではなく、mounted な binding の読み取り lease が consumer である。setup で作った State を callback が capture することは許す。
 - resource identity は source type + normalized configuration key とし、異なる設定の接続を分離しながら runtime 全体で共有する。停止した activation から遅れて届く更新は activation identity で破棄する。
-- ui の Animation は小さな opacity/scale 実行記述へ変換し、core に汎用 property engine や過剰な trait 階層を導入しない。spring は初期 scope に含まれる必須機能とし、native 実装が BKSS 仕様と合わない場合は根拠を得た上で最小の runner を検討する。
+- ui の Animation は小さな opacity 実行記述へ変換し、core に汎用 property engine や過剰な trait 階層を導入しない。spring は初期 scope に含まれる必須機能とし、native 実装が BKSS 仕様と合わない場合は根拠を得た上で最小の runner を検討する。
 
 ## integration failure と終了
 
@@ -51,9 +51,9 @@ Shell の runtime entry point は core に置き、汎用の低レベル surface
 
 同じ definition でも core runtime が display ごとの lifecycle と visibility を独立に管理し、各 display の content factory を mount 時に実行する。`KeyboardFocus::None | Interactive` は definition 作成時に明示する。Interactive は surface 作成時の `OnDemand` を要求し、None は `None` で作成する。初期契約は single seat であり、BKSS は overlay 間の keyboard arbitration、seat ごとの ordering、native activation/focus、focus restoration を行わない。compositor が実際の focus と同一 layer 内の visual order を決める。ユーザー click は通常の入力であり、redundant open は no-op で surface を raise しない。
 
-Escape は実際に Escape event を受け取った mounted `Interactive` instance だけを閉じる。None instance への Escape 配達は約束しない。現在の Overlay scope は animation を含まず、close は即時にその display instance を閉じる。一般の UI animation/lifecycle 要件（CF-05 等）は別の将来・対応範囲として維持する。
+Escape は実際に Escape event を受け取った mounted `Interactive` instance だけを閉じる。None instance への Escape 配達は約束しない。外部 handle、Escape、backdrop の close は同じ lifecycle 経路を使う。animation 未指定時と exit animation なしの場合は即時に閉じ、exit animation 指定時は完了までその display instance の surface・content・resource lease を保持する。
 
-open は display ごとに `Closed | Pending | Mounted` lifecycle を持つ。repeated open は pending/mounted instance を activate、raise、recreate しない。pending close は factory を呼ばず取消し、後の genuine open は新 generation で開始する。stale factory result はその正確な旧 window だけを回収し、callback 後に generation/runtime を再確認する。対象 instance close はその view/surface と lease のみ解放し、他 display や runtime の別 surface を閉じない。runtime shutdown/fatal は pending を含む全 runtime-owned surface を cleanup し、fatal primary cause と attach host の所有権を維持する。display ごとの visibility/content teardown と runtime-wide resource sharing は独立に検証する。
+open は display ごとに `Closed | Pending | Mounted` lifecycle を持つ。repeated open は pending/mounted instance を activate、raise、recreate しない。exit 中の reopen は同じ mount generation・window・content を保持し、現在値と速度から enter へ retarget する。旧 exit completion は無効化する。pending close は factory を呼ばず取消し、完全に閉じた後の genuine open は新 generation で開始する。stale factory result はその正確な旧 window だけを回収し、callback 後に generation/runtime を再確認する。対象 instance close はその view/surface と lease のみ解放し、他 display や runtime の別 surface を閉じない。runtime shutdown/fatal は animation を即時取消し、pending を含む全 runtime-owned surface を cleanup し、fatal primary cause と attach host の所有権を維持する。display ごとの visibility/content teardown と runtime-wide resource sharing は独立に検証する。
 
 ## Geometry / Input API
 
@@ -203,7 +203,7 @@ compositor blur は capability と設定に依存する任意強化である。�
 
 ## animation
 
-公開 animation API は ui に置く。アニメーションは opt-in の純粋な定義として enter、exit、transition に attach する。初期 scope は opacity と scale、補間は linear/easing/spring とする。実行、lifecycle との接続、スケジューリングは core runtime が担う。transition は enter 定義と、その逆向きの exit 定義を設定する。同じ target への後続 builder assignment が勝つ。デフォルトではアニメーションしない。途中で再 open した場合は現在値から新しい target へ進み、endpoint へ jump しない。
+公開 animation API は ui に置く。アニメーションは opt-in の純粋な定義として enter、exit、transition に attach する。対象 property は opacity、補間は linear/easing/spring とする。実行、lifecycle との接続、スケジューリングは core runtime が担う。transition は enter 定義と、その逆向きの exit 定義を設定する。同じ target への後続 builder assignment が勝つ。デフォルトではアニメーションしない。途中で再 open した場合は現在値から新しい target へ進み、endpoint へ jump しない。
 
 ### timing kind
 
@@ -231,7 +231,6 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 - retarget 時は可能な限り現在値と速度を維持し、endpoint へ jump しない。redundant open は max duration をリセットしない。
 - 内部 solver の速度は、描画に使う clamp によって汚染しない。render 値だけを clamp する。
 - opacity の endpoint は [0, 1] とし、spring 内部で overshoot しても render opacity は [0, 1] に clamp する。
-- scale の endpoint は >= 0 の有限値とし、overshoot 時も反転（負の scale）を render しない。
 - settle 判定: 正規化された位置誤差と速度の両方が eps = 0.001 未満になったとき completed とする。位置誤差の正規化は固定の非ゼロ channel reference span で行う。採用する正規化 span は `max(abs(original transition endpoint span), 1.0)` で、span が 0 や retarget 後でも tolerance が変わらず、0 除算も起きない。速度は「単位 / 秒」で正規化する。
 - 位置誤差が eps 未満で速度がほぼ 0 の微小静止誤差の場合、endpoint に 1 回だけ snap して completed とする。
 - 開始時に距離 0 でも速度が 0 でない場合は即時 completed とはせず、速度が収束するまで実行する。
@@ -248,7 +247,7 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 | CF-03 | BottomBar | 起動時の複数 display に layer-shell surface、logical-height の予約、非フォーカスを確認できる |
 | CF-04 | Overlay | display 別 open/close、独立 visibility/content/lifecycle、definition 時の keyboard mode 選択、実際に配達された Escape による Interactive instance close を確認できる |
 | CF-05 | lifecycle | exit 完了前に破棄せず、exit なしは即時 close、反復要求、現在値からの retarget、stale completion 防止をテストできる |
-| CF-06 | animation | opt-in の opacity/scale を fake clock で検証し、未指定時は即時状態になる |
+| CF-06 | animation | opt-in の opacity を fake clock で検証し、未指定時は即時状態になる |
 | CF-07 | reactive | test source の update、unsubscribe、resource sharing、cleanup を検証でき、最後の consumer 後に停止し次回利用で再取得する |
 | CF-08 | displays | 起動時に接続済み複数 display を同時表示できる。hotplug は対象外と明記する |
 | CF-09 | fatal integration failure | acquisition/subscription の開始時・開始後 failure が原因付きで伝播し、Shell 全体を終了する。cleanup は重複せず、shutdown 中に別 backend を開始しない |
@@ -271,5 +270,5 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 
 - display hotplug。初期要件は起動時に接続済みの display のみ。
 - compositor blur の常時利用。capability がない場合も静的 Glass を提供する。
-- 初期 scale による任意 subtree の入力領域、selection、caret/IME 変換。
+- scale animation、および任意 subtree の入力領域、selection、caret/IME の変換。
 - 特定 integration を core に組み込むこと、完成済み shell、未測定の性能保証。
