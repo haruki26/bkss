@@ -3,11 +3,26 @@ pre-commit:
   commands:
     format:
       root: crates/bkss-ui
-      glob: "crates/bkss-ui/**/*.rs"
+      glob:
+        - "crates/bkss-ui/*.rs"
+        - "crates/bkss-ui/**/*.rs"
       run: cargo fmt -- {staged_files}
       stage_fixed: true
     lint:
       root: crates/bkss-ui
-      glob: "crates/bkss-ui/**/*.rs"
+      glob:
+        - "crates/bkss-ui/*.rs"
+        - "crates/bkss-ui/**/*.rs"
       run: cargo clippy
       stage_fixed: true
+
+pre-push:
+  commands:
+    test:
+      glob:
+        - "crates/bkss-ui/*.rs"
+        - "crates/bkss-ui/**/*.rs"
+        - "crates/bkss-ui/Cargo.toml"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      run: cargo test -p bkss-ui
