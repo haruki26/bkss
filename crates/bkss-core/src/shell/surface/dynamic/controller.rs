@@ -1,9 +1,10 @@
-use super::surface_animation::SurfaceAnimation;
-use super::{ShellError, runtime::RuntimeInner};
+use crate::shell::{ShellError, runtime::RuntimeInner};
 use crate::{
     AnimationPlan, AnimationSample, LayerSurfaceConfig, Phase,
     surface::{DISPLAY_POLL_INTERVAL, DisplayReadiness, Readiness},
 };
+
+use super::super::animation::SurfaceAnimation;
 use gpui::{
     AnyView, App, AppContext, DisplayId, Entity, ParentElement, Render, Subscription, Task, Window,
     div,
@@ -20,19 +21,19 @@ use std::{
 type Factory =
     Box<dyn FnMut(SurfaceInstanceHandle, &mut Window, &mut App) -> Result<AnyView, ShellError>>;
 
-pub struct Controller {
-    runtime: Weak<RuntimeInner>,
+pub(in crate::shell) struct Controller {
+    pub(super) runtime: Weak<RuntimeInner>,
     config: LayerSurfaceConfig,
     timeout: Duration,
     animation_plan: Option<AnimationPlan>,
     factory: RefCell<Option<Factory>>,
     next_generation: Cell<u64>,
-    entries: RefCell<HashMap<DisplayId, Entry>>,
-    stopped: Cell<bool>,
+    pub(super) entries: RefCell<HashMap<DisplayId, Entry>>,
+    pub(super) stopped: Cell<bool>,
     window_closed: RefCell<Option<Subscription>>,
 }
 
-enum Entry {
+pub(super) enum Entry {
     Pending {
         generation: u64,
         active: Rc<Cell<bool>>,
@@ -180,7 +181,7 @@ impl Controller {
                             && let Some(runtime) = controller.runtime.upgrade()
                         {
                             cx.update(|app| {
-                                super::runtime::record_surface_failure(
+                                crate::shell::runtime::record_surface_failure(
                                     &runtime,
                                     crate::SurfaceError::DisplayReadinessTimeout {
                                         display_id: display,
@@ -215,76 +216,6 @@ impl Controller {
         matches!(self.entries.borrow().get(&display), Some(Entry::Pending { generation: current, .. }) if *current == generation)
     }
 
-    fn animation_sample(&self, display: DisplayId, generation: u64) -> Option<AnimationSample> {
-        self.entries
-            .borrow()
-            .get(&display)
-            .and_then(|entry| match entry {
-                Entry::Pending {
-                    generation: current,
-                    animation,
-                    ..
-                }
-                | Entry::Mounted {
-                    generation: current,
-                    animation,
-                    ..
-                } if *current == generation => animation.as_ref().map(SurfaceAnimation::value),
-                _ => None,
-            })
-    }
-
-    fn reopen(self: &Rc<Self>, display: DisplayId, cx: &mut App) {
-        let now = cx.background_executor().now();
-        let generation = {
-            let mut entries = self.entries.borrow_mut();
-            let Some(Entry::Mounted {
-                generation,
-                animation: Some(animation),
-                ..
-            }) = entries.get_mut(&display)
-            else {
-                return;
-            };
-            if animation.phase() != Phase::Exit {
-                return;
-            }
-            if let Err(error) = animation.request(Phase::Enter, now) {
-                drop(entries);
-                self.fail_animation(error, cx);
-                return;
-            }
-            *generation
-        };
-        self.defer_refresh(display, generation, cx);
-        self.queue_frame(display, generation, cx);
-    }
-
-    fn defer_refresh(self: &Rc<Self>, display: DisplayId, generation: u64, cx: &mut App) {
-        let window = match self.entries.borrow().get(&display) {
-            Some(Entry::Mounted {
-                generation: current,
-                window,
-                ..
-            }) if *current == generation => *window,
-            _ => return,
-        };
-        let weak = Rc::downgrade(self);
-        cx.defer(move |cx| {
-            let Some(controller) = weak.upgrade() else {
-                return;
-            };
-            let is_current = matches!(
-                controller.entries.borrow().get(&display),
-                Some(Entry::Mounted { generation: current, window: current_window, .. })
-                    if *current == generation && current_window.window_id() == window.window_id()
-            );
-            if is_current {
-                let _ = cx.update_window(window, |_, window, _| window.refresh());
-            }
-        });
-    }
-
     fn clear_pending(&self, display: DisplayId, generation: u64, cx: &gpui::AsyncApp) -> bool {
         let removed = {
             let mut entries = self.entries.borrow_mut();
@@ -296,10 +227,7 @@ impl Controller {
             }
         };
         if let Some(Entry::Pending { active, task, .. }) = removed {
-            active.set(false);
-            if let Some(task) = task {
-                defer_task_drop(cx, task);
-            }
+            let _ = finish_pending(active, task, None, cx);
             true
         } else {
             false
@@ -325,12 +253,12 @@ impl Controller {
                 Err(error) => {
                     if let Some(runtime) = self.runtime.upgrade() {
                         cx.update(|app| {
-                            super::runtime::record_setup_failure(
+                            crate::shell::runtime::record_setup_failure(
                                 &runtime,
                                 ShellError::setup(error),
                             );
-                            super::runtime::stop_runtime(&runtime, app);
-                            super::runtime::request_host_quit(&runtime, app);
+                            crate::shell::runtime::stop_runtime(&runtime, app);
+                            crate::shell::runtime::request_host_quit(&runtime, app);
                         });
                     }
                     self.clear_pending(display, generation, cx);
@@ -360,7 +288,7 @@ impl Controller {
         let options = config.options.clone();
         let opened = cx.update(|app| {
             app.open_window(
-                super::surface_window::layer_window_options(display, config.size, options),
+                crate::shell::surface::layer_window_options(display, config.size, options),
                 |window, app| {
                     window.set_input_region(Some(&[]));
                     let root = app.new(|_| DynamicRoot(None));
@@ -385,20 +313,20 @@ impl Controller {
                 .is_some_and(|runtime| !runtime.stopped.get());
         if !current {
             if let Ok(window) = opened {
-                super::surface_window::remove_window_later(cx, window);
+                crate::shell::surface::remove_window_later(cx, window);
             }
             self.clear_pending(display, generation, cx);
             return;
         }
         if let Some(Err(error)) = result.as_ref() {
             if let Ok(window) = opened {
-                super::surface_window::remove_window_later(cx, window);
+                crate::shell::surface::remove_window_later(cx, window);
             }
             if let Some(runtime) = self.runtime.upgrade() {
                 cx.update(|app| {
-                    super::runtime::record_setup_failure(&runtime, error.clone());
-                    super::runtime::stop_runtime(&runtime, app);
-                    super::runtime::request_host_quit(&runtime, app);
+                    crate::shell::runtime::record_setup_failure(&runtime, error.clone());
+                    crate::shell::runtime::stop_runtime(&runtime, app);
+                    crate::shell::runtime::request_host_quit(&runtime, app);
                 });
             }
             self.clear_pending(display, generation, cx);
@@ -419,13 +347,7 @@ impl Controller {
                         task,
                         animation,
                         ..
-                    }) => {
-                        active.set(false);
-                        if let Some(task) = task {
-                            defer_task_drop(cx, task);
-                        }
-                        animation
-                    }
+                    }) => finish_pending(active, task, animation, cx),
                     _ => None,
                 };
                 self.entries.borrow_mut().insert(
@@ -438,11 +360,11 @@ impl Controller {
                 );
                 cx.update(|app| self.queue_frame(display, generation, app));
             }
-            Ok(window) => super::surface_window::remove_window_later(cx, window),
+            Ok(window) => crate::shell::surface::remove_window_later(cx, window),
             Err(cause) => {
                 if let Some(runtime) = self.runtime.upgrade() {
                     cx.update(|app| {
-                        super::runtime::record_surface_failure(
+                        crate::shell::runtime::record_surface_failure(
                             &runtime,
                             crate::SurfaceError::Creation {
                                 display_id: display,
@@ -512,164 +434,14 @@ impl Controller {
         }
         match old {
             Some(Entry::Pending { active, task, .. }) => {
-                active.set(false);
-                if let Some(task) = task {
-                    defer_task_drop(&cx.to_async(), task);
-                }
+                let _ = finish_pending(active, task, None, &cx.to_async());
             }
             Some(Entry::Mounted { window, .. }) => {
-                super::surface_window::remove_window_later(&cx.to_async(), window)
+                crate::shell::surface::remove_window_later(&cx.to_async(), window)
             }
             None => {}
         }
         Ok(())
-    }
-
-    fn fail_animation(&self, error: crate::RunnerError, cx: &mut App) {
-        if let Some(runtime) = self.runtime.upgrade() {
-            super::runtime::record_setup_failure(&runtime, ShellError::setup(error));
-            super::runtime::stop_runtime(&runtime, cx);
-            super::runtime::request_host_quit(&runtime, cx);
-        }
-    }
-
-    fn queue_frame(self: &Rc<Self>, display: DisplayId, generation: u64, cx: &mut App) {
-        let should_queue = {
-            let mut entries = self.entries.borrow_mut();
-            let Some(Entry::Mounted {
-                generation: current,
-                animation: Some(animation),
-                ..
-            }) = entries.get_mut(&display)
-            else {
-                return;
-            };
-            if *current != generation
-                || !animation.value().running
-                || animation.is_frame_pending()
-                || self.stopped.get()
-            {
-                false
-            } else {
-                animation.set_frame_pending(true);
-                true
-            }
-        };
-        if should_queue {
-            let weak = Rc::downgrade(self);
-            cx.defer(move |cx| {
-                if let Some(controller) = weak.upgrade() {
-                    controller.schedule_frame(display, generation, cx);
-                }
-            });
-        }
-    }
-
-    fn schedule_frame(self: &Rc<Self>, display: DisplayId, generation: u64, cx: &mut App) {
-        let window = match self.entries.borrow().get(&display) {
-            Some(Entry::Mounted {
-                generation: current,
-                window,
-                animation: Some(animation),
-            }) if *current == generation && animation.is_frame_pending() => *window,
-            _ => return,
-        };
-        let weak = Rc::downgrade(self);
-        if cx
-            .update_window(window, move |_, window, _| {
-                window.on_next_frame(move |window, app| {
-                    if let Some(controller) = weak.upgrade() {
-                        controller.advance_frame(display, generation, window, app);
-                    }
-                });
-            })
-            .is_err()
-            && let Some(Entry::Mounted {
-                generation: current,
-                animation: Some(animation),
-                ..
-            }) = self.entries.borrow_mut().get_mut(&display)
-            && *current == generation
-        {
-            animation.set_frame_pending(false);
-        }
-    }
-
-    fn advance_frame(
-        self: &Rc<Self>,
-        display: DisplayId,
-        generation: u64,
-        window: &mut Window,
-        cx: &mut App,
-    ) {
-        if self.stopped.get()
-            || self
-                .runtime
-                .upgrade()
-                .is_none_or(|runtime| runtime.stopped.get())
-        {
-            return;
-        }
-        let now = cx.background_executor().now();
-        let (running, finish_exit, failure) = {
-            let mut entries = self.entries.borrow_mut();
-            let Some(Entry::Mounted {
-                generation: current,
-                animation: Some(animation),
-                ..
-            }) = entries.get_mut(&display)
-            else {
-                return;
-            };
-            if *current != generation || !animation.is_frame_pending() {
-                return;
-            }
-            animation.set_frame_pending(false);
-            match animation.sample(now) {
-                Ok(sample) => (
-                    sample.running,
-                    sample.completion.is_some_and(|token| {
-                        animation.phase() == Phase::Exit
-                            && token == animation.token()
-                            && animation.is_current(token)
-                    }),
-                    None,
-                ),
-                Err(error) => (false, false, Some(error)),
-            }
-        };
-        if let Some(error) = failure {
-            self.fail_animation(error, cx);
-            return;
-        }
-        window.refresh();
-        if finish_exit {
-            let removed = {
-                let mut entries = self.entries.borrow_mut();
-                matches!(entries.get(&display), Some(Entry::Mounted { generation: current, animation: Some(animation), .. }) if *current == generation && animation.phase() == Phase::Exit)
-                    .then(|| entries.remove(&display))
-                    .flatten()
-            };
-            if removed.is_some() {
-                window.remove_window();
-            }
-        } else if running {
-            let weak = Rc::downgrade(self);
-            if let Some(Entry::Mounted {
-                generation: current,
-                animation: Some(animation),
-                ..
-            }) = self.entries.borrow_mut().get_mut(&display)
-                && *current == generation
-            {
-                animation.set_frame_pending(true);
-                window.on_next_frame(move |window, app| {
-                    if let Some(controller) = weak.upgrade() {
-                        controller.advance_frame(display, generation, window, app);
-                    }
-                });
-            }
-        }
     }
 }
 
@@ -696,7 +468,20 @@ fn defer_task_drop(cx: &gpui::AsyncApp, task: Task<()>) {
     .detach();
 }
 
-pub(super) fn register<V: Render + 'static>(
+fn finish_pending(
+    active: Rc<Cell<bool>>,
+    task: Option<Task<()>>,
+    animation: Option<SurfaceAnimation>,
+    cx: &gpui::AsyncApp,
+) -> Option<SurfaceAnimation> {
+    active.set(false);
+    if let Some(task) = task {
+        defer_task_drop(cx, task);
+    }
+    animation
+}
+
+pub(in crate::shell) fn register<V: Render + 'static>(
     runtime: &Rc<RuntimeInner>,
     config: LayerSurfaceConfig,
     timeout: Duration,
@@ -714,7 +499,7 @@ pub(super) fn register<V: Render + 'static>(
     }
     if runtime.stopped.get() {
         return Err(ShellError::setup(
-            super::runtime::SurfaceRegistrationError::Closed,
+            crate::shell::runtime::SurfaceRegistrationError::Closed,
         ));
     }
     let anchors = config.options.anchor;
@@ -794,14 +579,17 @@ pub(super) fn register<V: Render + 'static>(
     Ok(DynamicSurfaceHandle(Rc::downgrade(&controller)))
 }
 
-pub(super) fn stop_controllers(runtime: &RuntimeInner, cx: &mut App) {
+pub(in crate::shell) fn stop_controllers(runtime: &RuntimeInner, cx: &mut App) {
     let controllers = runtime.dynamic_surfaces.borrow().clone();
     for controller in controllers {
         controller.stop(cx);
     }
 }
 
-pub(super) fn drop_controllers(controllers: &mut Vec<Rc<Controller>>, app: &gpui::AsyncApp) {
+pub(in crate::shell) fn drop_controllers(
+    controllers: &mut Vec<Rc<Controller>>,
+    app: &gpui::AsyncApp,
+) {
     for controller in std::mem::take(controllers) {
         controller.cleanup(app);
     }
@@ -832,13 +620,10 @@ impl Controller {
         for (_, entry) in entries {
             match entry {
                 Entry::Pending { active, task, .. } => {
-                    active.set(false);
-                    if let Some(task) = task {
-                        defer_task_drop(app, task);
-                    }
+                    let _ = finish_pending(active, task, None, app);
                 }
                 Entry::Mounted { window, .. } => {
-                    super::surface_window::remove_window_later(app, window)
+                    crate::shell::surface::remove_window_later(app, window)
                 }
             }
         }

@@ -15,8 +15,8 @@ pub(super) struct RuntimeInner {
     pub(super) outcome: RefCell<Option<Result<(), ShellError>>>,
     pub(super) stopped: Cell<bool>,
     pub(super) surfaces: RefCell<Vec<AnyWindowHandle>>,
-    pub(super) surface_works: RefCell<Vec<Rc<super::surface_runtime::SurfaceWork>>>,
-    pub(super) dynamic_surfaces: RefCell<Vec<Rc<super::dynamic_surface_runtime::Controller>>>,
+    pub(super) surface_works: RefCell<Vec<Rc<super::surface::SurfaceWork>>>,
+    pub(super) dynamic_surfaces: RefCell<Vec<Rc<super::surface::Controller>>>,
     app: AsyncApp,
     quit_host_on_failure: bool,
     host_quit_requested: Cell<bool>,
@@ -97,7 +97,7 @@ impl RuntimeHandle {
         descriptor: SurfaceDescriptor<V>,
         cx: &mut App,
     ) -> Result<(), ShellError> {
-        super::surface_runtime::mount_surface(&self.0, descriptor, cx)
+        super::surface::mount_surface(&self.0, descriptor, cx)
     }
 
     /// Registers a non-interactive layer surface declaration for startup displays.
@@ -106,7 +106,7 @@ impl RuntimeHandle {
         declaration: LayerSurfaceDeclaration<V>,
         cx: &mut App,
     ) -> Result<(), ShellError> {
-        super::surface_runtime::mount_layer_surface(&self.0, declaration, cx)
+        super::surface::mount_layer_surface(&self.0, declaration, cx)
     }
 
     pub fn register_dynamic_layer_surface<V: Render + 'static>(
@@ -121,14 +121,7 @@ impl RuntimeHandle {
         + 'static,
         cx: &mut App,
     ) -> Result<crate::DynamicSurfaceHandle, ShellError> {
-        super::dynamic_surface_runtime::register(
-            &self.0,
-            config,
-            readiness_timeout,
-            None,
-            factory,
-            cx,
-        )
+        super::surface::register(&self.0, config, readiness_timeout, None, factory, cx)
     }
 
     /// Registers an animated dynamic layer surface.
@@ -146,14 +139,7 @@ impl RuntimeHandle {
         + 'static,
         cx: &mut App,
     ) -> Result<crate::DynamicSurfaceHandle, ShellError> {
-        super::dynamic_surface_runtime::register(
-            &self.0,
-            config,
-            readiness_timeout,
-            Some(plan),
-            factory,
-            cx,
-        )
+        super::surface::register(&self.0, config, readiness_timeout, Some(plan), factory, cx)
     }
 
     pub fn downgrade(&self) -> WeakRuntimeHandle {
@@ -220,15 +206,9 @@ impl std::error::Error for SurfaceRegistrationError {}
 impl Drop for RuntimeInner {
     fn drop(&mut self) {
         self.scope.shutdown();
-        super::surface_runtime::drop_surface_works(self.surface_works.get_mut());
-        super::dynamic_surface_runtime::drop_controllers(
-            self.dynamic_surfaces.get_mut(),
-            &self.app,
-        );
-        super::surface_window::remove_windows_later(
-            &self.app,
-            std::mem::take(self.surfaces.get_mut()),
-        );
+        super::surface::drop_surface_works(self.surface_works.get_mut());
+        super::surface::drop_controllers(self.dynamic_surfaces.get_mut(), &self.app);
+        super::surface::remove_windows_later(&self.app, std::mem::take(self.surfaces.get_mut()));
     }
 }
 pub(super) fn stop_runtime(inner: &RuntimeInner, cx: &mut App) {
@@ -236,11 +216,11 @@ pub(super) fn stop_runtime(inner: &RuntimeInner, cx: &mut App) {
         return;
     }
     inner.scope.shutdown();
-    super::surface_runtime::stop_surface_works(inner);
-    super::dynamic_surface_runtime::stop_controllers(inner, cx);
+    super::surface::stop_surface_works(inner);
+    super::surface::stop_controllers(inner, cx);
     let handles = std::mem::take(&mut *inner.surfaces.borrow_mut());
     for handle in handles {
-        super::surface_window::remove_window(cx, handle);
+        super::surface::remove_window(cx, handle);
     }
 }
 

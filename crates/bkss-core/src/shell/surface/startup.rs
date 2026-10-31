@@ -1,4 +1,4 @@
-use super::runtime::{
+use crate::shell::runtime::{
     RuntimeInner, SurfaceRegistrationError, record_setup_failure, record_surface_failure,
     request_host_quit, stop_runtime,
 };
@@ -16,7 +16,7 @@ use std::{
     rc::Rc,
 };
 
-pub(super) struct SurfaceWork {
+pub(in crate::shell) struct SurfaceWork {
     task: RefCell<Option<Task<()>>>,
     active: Cell<bool>,
     cancel: RefCell<Option<Box<dyn FnOnce()>>>,
@@ -26,7 +26,7 @@ struct LayerFactory<V: Render + 'static> {
     content: crate::surface::LayerContentFactory<V>,
 }
 
-pub(super) fn mount_surface<V: Render + 'static>(
+pub(in crate::shell) fn mount_surface<V: Render + 'static>(
     inner: &Rc<RuntimeInner>,
     descriptor: SurfaceDescriptor<V>,
     cx: &mut App,
@@ -106,7 +106,7 @@ pub(super) fn mount_surface<V: Render + 'static>(
                     };
                     let opened = cx
                         .open_window(
-                            super::surface_window::layer_window_options(
+                            super::window::layer_window_options(
                                 display_id,
                                 size,
                                 LayerShellOptions {
@@ -144,7 +144,7 @@ pub(super) fn mount_surface<V: Render + 'static>(
     Ok(())
 }
 
-pub(super) fn mount_layer_surface<V: Render + 'static>(
+pub(in crate::shell) fn mount_layer_surface<V: Render + 'static>(
     inner: &Rc<RuntimeInner>,
     declaration: LayerSurfaceDeclaration<V>,
     cx: &mut App,
@@ -269,11 +269,7 @@ pub(super) fn mount_layer_surface<V: Render + 'static>(
                 options.keyboard_interactivity = gpui::layer_shell::KeyboardInteractivity::None;
                 let opened = cx
                     .open_window(
-                        super::surface_window::layer_window_options(
-                            display_id,
-                            config.size,
-                            options,
-                        ),
+                        super::window::layer_window_options(display_id, config.size, options),
                         |window, app| {
                             window.set_input_region(Some(&[]));
                             (factory.content)(display_id, window, app)
@@ -334,7 +330,7 @@ pub(super) fn finish_surface_open(
 ) {
     match opened {
         Ok(handle) if !inner.stopped.get() => inner.surfaces.borrow_mut().push(handle),
-        Ok(handle) => super::surface_window::remove_window(cx, handle),
+        Ok(handle) => super::window::remove_window(cx, handle),
         Err(cause) => record_surface_failure(
             inner,
             SurfaceError::Creation {
@@ -346,7 +342,7 @@ pub(super) fn finish_surface_open(
     }
 }
 
-pub(super) fn stop_surface_works(inner: &RuntimeInner) {
+pub(in crate::shell) fn stop_surface_works(inner: &RuntimeInner) {
     let works = inner.surface_works.borrow().clone();
     for work in works {
         if !work.active.get() {
@@ -363,7 +359,7 @@ fn cancel_surface_work(work: &SurfaceWork) {
     }
 }
 
-pub(super) fn drop_surface_works(works: &mut Vec<Rc<SurfaceWork>>) {
+pub(in crate::shell) fn drop_surface_works(works: &mut Vec<Rc<SurfaceWork>>) {
     for work in std::mem::take(works) {
         work.task.borrow_mut().take();
         cancel_surface_work(&work);

@@ -3,7 +3,7 @@ use gpui::{
     WindowBounds, WindowKind, WindowOptions, layer_shell::LayerShellOptions, px,
 };
 
-pub(super) fn layer_window_options(
+pub(in crate::shell) fn layer_window_options(
     display: DisplayId,
     size: Size<Pixels>,
     options: LayerShellOptions,
@@ -21,17 +21,17 @@ pub(super) fn layer_window_options(
     }
 }
 
-pub(super) fn remove_window(cx: &mut impl AppContext, window: AnyWindowHandle) {
+pub(in crate::shell) fn remove_window(cx: &mut impl AppContext, window: AnyWindowHandle) {
     let _ = cx.update_window(window, |_, window, _| window.remove_window());
 }
 
-pub(super) fn remove_window_later(cx: &AsyncApp, window: AnyWindowHandle) {
+pub(in crate::shell) fn remove_window_later(cx: &AsyncApp, window: AnyWindowHandle) {
     let app = cx.clone();
     app.spawn(async move |cx| remove_window(cx, window))
         .detach();
 }
 
-pub(super) fn remove_windows_later(cx: &AsyncApp, windows: Vec<AnyWindowHandle>) {
+pub(in crate::shell) fn remove_windows_later(cx: &AsyncApp, windows: Vec<AnyWindowHandle>) {
     if windows.is_empty() {
         return;
     }
