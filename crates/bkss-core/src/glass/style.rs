@@ -286,6 +286,10 @@ impl GlassPatch {
 }
 
 /// Immutable, cloneable base Glass style with optional interaction-state overrides.
+///
+/// Defaults to a 12 px radius, black tint at alpha 0.15, decoration opacity 1.0,
+/// and no border, rim, or inner effects. Opacity multiplies decoration colors,
+/// not child content; compositor background effects are configured separately.
 #[derive(Clone)]
 pub struct GlassStyle {
     base: GlassPatch,
@@ -304,7 +308,7 @@ impl Default for GlassStyle {
                     red: 0.0,
                     green: 0.0,
                     blue: 0.0,
-                    alpha: 0.25,
+                    alpha: 0.15,
                 }),
             hover: GlassPatch::default(),
             pressed: GlassPatch::default(),
@@ -424,7 +428,7 @@ impl Default for ResolvedGlassStyle {
                 red: 0.0,
                 green: 0.0,
                 blue: 0.0,
-                alpha: 0.25,
+                alpha: 0.15,
             },
             border: None,
             rim: None,
@@ -530,6 +534,23 @@ mod tests {
     }
 
     #[test]
+    fn defaults_resolve_to_thin_tint_without_optional_decorations() {
+        let cx = TestAppContext::single();
+        let resolved = GlassStyle::default().resolve(GlassState::default(), &cx);
+        assert_eq!(resolved, ResolvedGlassStyle::default());
+        assert_eq!(resolved.radius.get(), 12.0);
+        assert_eq!(resolved.opacity.get(), 1.0);
+        assert_eq!(
+            resolved.tint,
+            GlassColor::rgba(0.0, 0.0, 0.0, 0.15).unwrap()
+        );
+        assert_eq!(resolved.border, None);
+        assert_eq!(resolved.rim, None);
+        assert_eq!(resolved.inner_highlight, None);
+        assert_eq!(resolved.inner_shadow, None);
+    }
+
+    #[test]
     fn clone_defaults_and_all_state_combinations_follow_sequential_merge() {
         let cx = TestAppContext::single();
         let default = GlassStyle::default();
@@ -609,7 +630,7 @@ mod tests {
         assert_eq!(resolved.rim, Some(rim));
         assert_eq!(resolved.opacity.get(), 0.6);
         assert_eq!(resolved.radius.get(), 4.0);
-        assert_eq!(resolved.tint.alpha(), 0.25);
+        assert_eq!(resolved.tint.alpha(), 0.15);
     }
 
     fn set_opacity(

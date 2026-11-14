@@ -5,6 +5,10 @@ use gpui::{
 };
 
 /// A fresh Glass frame with ordinary GPUI layout and child composition.
+///
+/// GPUI paints tint and explicitly requested borders, rims, and inner effects.
+/// Background refraction and blur are supplied separately by the compositor,
+/// not by this element. Decoration opacity does not change child opacity.
 #[derive(IntoElement)]
 pub struct GlassElement {
     container: Div,

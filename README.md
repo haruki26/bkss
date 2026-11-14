@@ -1,6 +1,6 @@
 # BKSS
 
-BKSS は Rust と GPUI を使い、Linux Wayland 向けのシェルを組み立てるためのライブラリです。`bkss-core` は Glass、runtime、reactive/resource、surface、animation の実行機構を、`bkss-ui` は BottomBar、Overlay、公開 Animation 定義を提供します。特定の外部サービスとの統合や完成済みシェルを提供するものではありません。
+BKSS は Rust と GPUI を使い、Hyprland 向けのシェルを組み立てるためのライブラリです。`bkss-core` は Glass、runtime、reactive/resource、surface、animation の実行機構を、`bkss-ui` は BottomBar、Overlay、公開 Animation 定義を提供します。ガラスの背景効果には Hyprglass を使用します。特定の外部サービスとの統合や完成済みシェルを提供するものではありません。
 
 ## 主な機能と使い方
 
@@ -38,7 +38,11 @@ UI 内で作る値には、初期値がすぐ利用できる `State<T>` を使�
 
 `Glass` は視覚装飾のプリミティブで、style を適用しただけでは内容を focusable/clickable にしません。`GlassStyle` で radius、opacity、tint、任意の border/rim、inner highlight/shadow を指定します。opacity は Glass 装飾に適用し、子 content の不透明度には適用しません。tint の alpha と opacity は乗算されます。
 
-hover / pressed / focus の見た目は、状態別 style を明示した場合だけ変化します。状態別 style は base への部分上書きで、適用順は base → hover → pressed、focus は最後に独立して適用します。Glass 自体は状態変化をアニメーションさせません。compositor blur は現在実装しておらず、静的 Glass で動作します。
+hover / pressed / focus の見た目は、状態別 style を明示した場合だけ変化します。状態別 style は base への部分上書きで、適用順は base → hover → pressed、focus は最後に独立して適用します。Glass 自体は状態変化をアニメーションさせません。
+
+背景の取得・ぼかし・屈折・光沢は **Hyprglass** が、薄い tint と子 content は GPUI が描画します。標準 tint の alpha は 0.15 です。明示的な border/rim/inner effect は通常の GPUI 装飾として利用できますが、Hyprglass の光沢と重ねる場合は二重の縁に注意してください。
+
+Hyprglass の導入・ロードと compositor 設定は別途必要です。[設定手順と対象範囲](docs/hyprglass.md)を参照してください。標準の設定例は `bkss-bottom-bar` だけを対象とし、Overlay は含みません。同一 surface 内の widget 間屈折と、他 compositor 向けの代替 backend は提供しません。library は Hyprglass の自動ロード・状態検出・設定変更を行いません。
 
 ### 4. BottomBar と Overlay を配置する
 

@@ -264,12 +264,9 @@ pub(in crate::shell) fn mount_layer_surface<V: Render + 'static>(
                     failed = true;
                     break;
                 };
-                let mut options = config.options;
-                options.namespace = SURFACE_NAMESPACE.to_owned();
-                options.keyboard_interactivity = gpui::layer_shell::KeyboardInteractivity::None;
                 let opened = cx
                     .open_window(
-                        super::window::layer_window_options(display_id, config.size, options),
+                        configured_layer_window_options(display_id, config),
                         |window, app| {
                             window.set_input_region(Some(&[]));
                             (factory.content)(display_id, window, app)
@@ -322,6 +319,15 @@ fn valid_layer_config(config: &LayerSurfaceConfig) -> bool {
             .is_none_or(|zone| f32::from(zone).is_finite() && f32::from(zone) >= 0.0)
 }
 
+fn configured_layer_window_options(
+    display_id: gpui::DisplayId,
+    config: LayerSurfaceConfig,
+) -> gpui::WindowOptions {
+    let mut options = config.options;
+    options.keyboard_interactivity = gpui::layer_shell::KeyboardInteractivity::None;
+    super::window::layer_window_options(display_id, config.size, options)
+}
+
 pub(super) fn finish_surface_open(
     inner: &RuntimeInner,
     display_id: gpui::DisplayId,
@@ -371,12 +377,40 @@ mod tests {
     use super::*;
     use crate::shell::{Shell, test_support::*};
     use crate::surface::SurfaceDescriptor;
-    use gpui::{AppContext, DisplayId, Size, TestAppContext, WindowOptions, px};
+    use gpui::{
+        AppContext, DisplayId, Size, TestAppContext, WindowKind, WindowOptions,
+        layer_shell::{KeyboardInteractivity, LayerShellOptions},
+        px,
+    };
     use std::{
         cell::{Cell, RefCell},
         error::Error,
         rc::Rc,
     };
+
+    #[test]
+    fn layer_config_namespace_reaches_native_window_options() {
+        let window_options = configured_layer_window_options(
+            DisplayId::new(7),
+            LayerSurfaceConfig {
+                size: Size::new(px(48.), px(20.)),
+                options: LayerShellOptions {
+                    namespace: "bkss-bottom-bar".to_owned(),
+                    keyboard_interactivity: KeyboardInteractivity::OnDemand,
+                    ..Default::default()
+                },
+            },
+        );
+
+        let WindowKind::LayerShell(layer_options) = window_options.kind else {
+            panic!("expected layer shell options");
+        };
+        assert_eq!(layer_options.namespace, "bkss-bottom-bar");
+        assert_eq!(
+            layer_options.keyboard_interactivity,
+            KeyboardInteractivity::None
+        );
+    }
 
     #[test]
     fn shutdown_cancels_waiting_surface_before_its_factory_runs() {

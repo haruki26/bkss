@@ -1,6 +1,6 @@
 # BKSS Core Foundation 仕様
 
-この文書は BKSS の初期 core + UI foundation に適用する規範的な挙動と受け入れ条件を定める。BKSS は Rust/GPUI による Linux Wayland 向けシェル構築ライブラリで、初期対象は Hyprland 上の Wayland である。ここにある型名やコード例は概念を示すもので、公開 API の確定シグネチャではない。
+この文書は BKSS の初期 core + UI foundation に適用する規範的な挙動と受け入れ条件を定める。BKSS は Rust/GPUI による Hyprland 向けシェル構築ライブラリで、ガラスの背景効果は Hyprglass が担当する。ここにある型名やコード例は概念を示すもので、公開 API の確定シグネチャではない。
 
 数値で「初期値」「default」と記した箇所は調整可能な暫定値であり、特に視覚値は実行・視覚確認で調整してよい。公開される挙動と受け入れ条件は、API 名や内部実装の未確定を理由に変更しない。GPUI/Wayland の実現性確認と実装状況は開発者向け資料に分離する。
 
@@ -181,7 +181,7 @@ Glass は純粋な視覚プリミティブである。`GlassStyle` は以下の�
 
 デフォルトは過激な OS テーマ連携なしで、中性かつ利用可能な値とする。以下の視覚初期値は設定可能である。
 
-- tint: rgba(0, 0, 0, 0.25)
+- tint: rgba(0, 0, 0, 0.15)
 - opacity: 1.0
 - radius: 12 logical px
 - border / rim / inner_highlight / inner_shadow: 未指定なら off
@@ -199,7 +199,13 @@ hover / pressed / focus などの外観変化は、**ユーザーがその状態
 
 ### blur / 背景効果
 
-compositor blur は capability と設定に依存する任意強化である。対応する protocol / capability が確認できるまでは background blur を実装せず、静的 Glass で動作する。blur 不可でも Glass API は同じまま動く。
+背景の取得、ぼかし、屈折、色収差、光沢は Hyprglass が compositor 側で担当する。GPUI は Glass の形状、薄い tint、明示的な装飾と子 content を描画する。`GlassStyle` の指定を Hyprglass の shader parameter に自動転送しない。
+
+Hyprglass の導入・ロード・設定・reload は利用者の環境管理の責務とする。library が `hyprctl` を呼び出したり設定ファイルを書き換えたりせず、利用可否の自動検出も行わない。Hyprglass が利用できない場合の背景効果は保証せず、他 compositor 向けの代替ガラス backend は設けない。通常の GPUI 描画だけが残ることを、液体ガラスへの代替表示として扱わない。
+
+標準設定の適用対象は namespace `bkss-bottom-bar` の BottomBar とする。core の layer 生成は `LayerSurfaceConfig.options.namespace` を保持し、Overlay の `bkss-overlay` と分離する。`SurfaceDescriptor` の固定 namespace `bkss-core-surface` は変更しない。
+
+同一 surface 内の widget 間屈折は対象外とする。Overlay の backdrop と opacity animation は alpha による輪郭推定と干渉するため、今回の設定例には含めない。既存の Overlay の入力・dismiss・animation の契約は維持する。設定と適用上の制約は [Hyprglass 連携](hyprglass.md)を参照。
 
 ## animation
 
@@ -243,7 +249,7 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 | ID | 要件 | 受け入れ条件 |
 |---|---|---|
 | CF-01 | core/ui 境界 | core + ui の foundation が特定 integration なしで build/API 検証でき、ui が core に依存し core から ui へ依存しない |
-| CF-02 | Glass | blur の有無にかかわらず静的 Glass が描画される |
+| CF-02 | Glass | GPUI の tint・明示装飾・子 content の契約を維持し、設定済み Hyprglass により BottomBar の背後の画面へ背景効果を適用できる |
 | CF-03 | BottomBar | 起動時の複数 display に layer-shell surface、logical-height の予約、非フォーカスを確認できる |
 | CF-04 | Overlay | display 別 open/close、独立 visibility/content/lifecycle、definition 時の keyboard mode 選択、実際に配達された Escape による Interactive instance close を確認できる |
 | CF-05 | lifecycle | exit 完了前に破棄せず、exit なしは即時 close、反復要求、現在値からの retarget、stale completion 防止をテストできる |
@@ -269,6 +275,6 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 ## 対象外
 
 - display hotplug。初期要件は起動時に接続済みの display のみ。
-- compositor blur の常時利用。capability がない場合も静的 Glass を提供する。
+- 他 compositor 向けの代替ガラス backend、同一 surface 内の widget 間屈折、Hyprglass の自動導入・ロード・設定検出。
 - scale animation、および任意 subtree の入力領域、selection、caret/IME の変換。
 - 特定 integration を core に組み込むこと、完成済み shell、未測定の性能保証。

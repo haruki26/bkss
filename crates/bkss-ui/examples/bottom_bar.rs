@@ -1,8 +1,12 @@
 //! Run with `mise x -- cargo run -p bkss-ui --example bottom_bar -- --seconds 30`.
 //! Use `--probe-window --no-reserve` for ordinary-window pointer pass-through checks.
+//!
+//! Background refraction and blur require Hyprglass to be loaded and configured
+//! externally in Hyprland for the `bkss-bottom-bar` namespace. GPUI draws the thin
+//! tint and content; this example does not change compositor configuration.
 use std::{io, process::ExitCode, time::Duration};
 
-use bkss_core::{GlassBorder, GlassColor, GlassStyle, Shell, ShellError};
+use bkss_core::{GlassColor, GlassStyle, Shell, ShellError};
 use bkss_ui::{
     BottomBar, BottomBarAlignment, BottomBarGeometry, BottomBarWidth, DisplaySelection,
     RuntimeHandleExt,
@@ -248,12 +252,7 @@ fn main() -> ExitCode {
     }
     let result = (|| {
         let args = parse_args(std::env::args().skip(1))?;
-        let style = GlassStyle::default()
-            .with_tint(GlassColor::rgba(0.06, 0.12, 0.16, 0.94)?)
-            .with_border(Some(GlassBorder::new(
-                1.,
-                GlassColor::rgba(0.6, 0.8, 0.9, 0.35)?,
-            )?));
+        let style = GlassStyle::default().with_tint(GlassColor::rgba(0.06, 0.12, 0.16, 0.15)?);
         let bar = BottomBar::new(args.geometry)?
             .with_style(style)
             .with_displays(args.displays.clone());

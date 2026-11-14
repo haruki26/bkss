@@ -816,7 +816,7 @@ mod tests {
                 "backdrop must not fade"
             );
             assert!(
-                (quads[1].background.as_solid().unwrap().a - 0.125).abs() < 0.001,
+                (quads[1].background.as_solid().unwrap().a - 0.15 * 0.5).abs() < 0.001,
                 "Glass tint shares the content wrapper"
             );
             assert!(
