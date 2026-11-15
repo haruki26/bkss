@@ -57,12 +57,19 @@
 pub mod base;
 mod presets;
 
-pub use base::{IntegrationView, WorkerGuard};
+pub use base::{
+    DispatchError, IntegrationView, Operation, OperationError, RespondError, Responder, Secret,
+    WorkerGuard,
+};
 pub use bkss_core::{
     Source, SourceDescriptor, SourcePublisher, SourceState, ThreadPublisher, ThreadPublisherGuard,
 };
 pub use presets::{
-    ActiveWindow, Clock, ClockPrecision, ClockState, Gpu, GpuError, GpuMetrics, GpuSource, GpuState,
-    GpuSupport, Hyprland, HyprlandError, HyprlandState, Usage, UsageKind, UsageSource, Workspace,
-    WorkspaceSwitch,
+    ActiveWindow, AuthorizationAnswer, Bluetooth, BluetoothAdapter, BluetoothAgentDisplay,
+    BluetoothAgentRequest, BluetoothAuthInputError, BluetoothConfig, BluetoothDevice, BluetoothError,
+    BluetoothState, Clock, ClockPrecision, ClockState, ConfirmationAnswer, Gpu, GpuError, GpuMetrics,
+    GpuSource, GpuState, GpuSupport, Hyprland, HyprlandError, HyprlandState, PasskeyAnswer,
+    PinCodeAnswer, Usage, UsageKind, UsageSource, Wifi, WifiAccessPoint, WifiAuthContext,
+    WifiAuthRequest, WifiCredentialField, WifiCredentials, WifiDevice, WifiDeviceState, WifiError,
+    WifiOperations, WifiSavedConnection, WifiSecurity, WifiState, Workspace, WorkspaceSwitch,
 };
