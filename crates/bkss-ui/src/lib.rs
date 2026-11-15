@@ -1,7 +1,8 @@
-//! Static shell widgets built on BKSS core and ordinary GPUI content.
+//! Shell widgets built on BKSS core and ordinary GPUI content.
 
 mod animation;
 mod layout;
+mod ui;
 
 pub use animation::{Animation, AnimationError, EasingCurve, Timing};
 pub use bkss_core::DisplaySelection;
@@ -11,3 +12,4 @@ pub use layout::{
     OverlayGeometryError, OverlayHandle, OverlayPlacement, OverlayRuntimeHandleExt, PointerDismiss,
     RuntimeHandleExt,
 };
+pub use ui::SourceDisplay;

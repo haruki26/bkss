@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 bkss-core = { workspace = true }
+bkss-integration = { workspace = true }
 gpui = { workspace = true, features = ["wayland"] }
 
 [dev-dependencies]

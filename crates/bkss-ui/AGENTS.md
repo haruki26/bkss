@@ -10,13 +10,14 @@
 - `src/layout/<component>/view.rs`: GPUI 描画、入力領域、pointer／keyboard の処理。
 - `src/layout/overlay/`: Overlay の宣言と描画。core runtime の animation sample を content wrapper の opacity に適用する。
 - `src/shared/`: 複数 component で同じ契約を持つ共通実装。現時点では空。
-- `src/ui/`: 独立した UI component。現時点では空。
+- `src/ui/`: 独立した UI component。`SourceDisplay` は mounted source の標準描画・描画差し替えと Loading 表示を担う。
 - `tests/`: 公開 API の統合テスト。
 - `examples/`: 利用例・実環境の動作確認。
 
 ## 依存と所有
 
 - `bkss-ui → bkss-core` を依存方向とし、core から UI への依存を作らない。
+- integration の標準描画契約には `bkss-integration` を利用する。外部バックエンドの取得・操作は UI に実装しない。
 - `shared` は component に依存させない。共通化は契約が一致する実装に限り、似た処理だけを理由に異なる挙動を統合しない。
 - GPUI と core の Glass・reactive・surface API を利用し、window／resource の lifecycle 管理を UI 側で重複実装しない。
 - animation の実行・スケジューリング・completion による surface の終了は core runtime が所有し、UI は定義と sample の描画反映を担う。
