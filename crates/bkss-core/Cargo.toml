@@ -4,9 +4,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-async-channel = "2.5.0"
-gpui = { git = "https://github.com/zed-industries/zed", rev = "c83abe7d0e060de08db386fbf86f7e95bfe6cb09", default-features = false, features = ["wayland"] }
+async-channel = { workspace = true }
+gpui = { workspace = true, features = ["wayland"] }
 gpui_platform = { git = "https://github.com/zed-industries/zed", rev = "c83abe7d0e060de08db386fbf86f7e95bfe6cb09", default-features = false, features = ["wayland"] }
 
 [dev-dependencies]
-gpui = { git = "https://github.com/zed-industries/zed", rev = "c83abe7d0e060de08db386fbf86f7e95bfe6cb09", default-features = false, features = ["test-support"] }
+gpui = { workspace = true, features = ["test-support"] }
