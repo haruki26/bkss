@@ -1,8 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/bkss-core", "crates/bkss-ui"]
+members = ["crates/bkss-core", "crates/bkss-ui", "crates/bkss-integration"]
 
 [workspace.dependencies]
 async-channel = "2.5.0"
 bkss-core = { path = "crates/bkss-core" }
+bkss-integration = { path = "crates/bkss-integration" }
 gpui = { git = "https://github.com/zed-industries/zed", rev = "c83abe7d0e060de08db386fbf86f7e95bfe6cb09", default-features = false }
