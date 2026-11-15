@@ -1,9 +1,15 @@
+mod audio;
+mod backlight;
+mod battery;
 mod bluetooth;
 mod clock;
 mod hyprland;
 mod usage;
 mod wifi;
 
+pub use audio::{Audio, AudioControl, AudioControlError, AudioDevice, AudioDeviceState, AudioError, AudioState};
+pub use backlight::{Backlight, BacklightError, BacklightSource, BacklightState};
+pub use battery::{Battery, BatteryEndpoint, BatteryError, BatterySource, BatteryState, ChargeState};
 pub use bluetooth::{AuthorizationAnswer, Bluetooth, BluetoothAdapter, BluetoothAgentDisplay, BluetoothAgentRequest, BluetoothAuthInputError, BluetoothConfig, BluetoothDevice, BluetoothError, BluetoothState, ConfirmationAnswer, PasskeyAnswer, PinCodeAnswer};
 pub use clock::{Clock, ClockPrecision, ClockState};
 pub use hyprland::{ActiveWindow, Hyprland, HyprlandError, HyprlandState, Workspace, WorkspaceSwitch};

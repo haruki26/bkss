@@ -65,11 +65,14 @@ pub use bkss_core::{
     Source, SourceDescriptor, SourcePublisher, SourceState, ThreadPublisher, ThreadPublisherGuard,
 };
 pub use presets::{
-    ActiveWindow, AuthorizationAnswer, Bluetooth, BluetoothAdapter, BluetoothAgentDisplay,
-    BluetoothAgentRequest, BluetoothAuthInputError, BluetoothConfig, BluetoothDevice, BluetoothError,
-    BluetoothState, Clock, ClockPrecision, ClockState, ConfirmationAnswer, Gpu, GpuError, GpuMetrics,
-    GpuSource, GpuState, GpuSupport, Hyprland, HyprlandError, HyprlandState, PasskeyAnswer,
-    PinCodeAnswer, Usage, UsageKind, UsageSource, Wifi, WifiAccessPoint, WifiAuthContext,
-    WifiAuthRequest, WifiCredentialField, WifiCredentials, WifiDevice, WifiDeviceState, WifiError,
-    WifiOperations, WifiSavedConnection, WifiSecurity, WifiState, Workspace, WorkspaceSwitch,
+    ActiveWindow, Audio, AudioControl, AudioControlError, AudioDevice, AudioDeviceState, AudioError,
+    AudioState, AuthorizationAnswer, Backlight, BacklightError, BacklightSource, BacklightState,
+    Battery, BatteryEndpoint, BatteryError, BatterySource, BatteryState, Bluetooth, BluetoothAdapter,
+    BluetoothAgentDisplay, BluetoothAgentRequest, BluetoothAuthInputError, BluetoothConfig,
+    BluetoothDevice, BluetoothError, BluetoothState, ChargeState, Clock, ClockPrecision, ClockState,
+    ConfirmationAnswer, Gpu, GpuError, GpuMetrics, GpuSource, GpuState, GpuSupport, Hyprland,
+    HyprlandError, HyprlandState, PasskeyAnswer, PinCodeAnswer, Usage, UsageKind, UsageSource, Wifi,
+    WifiAccessPoint, WifiAuthContext, WifiAuthRequest, WifiCredentialField, WifiCredentials, WifiDevice,
+    WifiDeviceState, WifiError, WifiOperations, WifiSavedConnection, WifiSecurity, WifiState, Workspace,
+    WorkspaceSwitch,
 };
