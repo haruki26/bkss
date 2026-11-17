@@ -6,7 +6,7 @@ BKSS は Hyprland を対象とする。背景の取得、ぼかし、屈折、�
 
 設定の基準は **Hyprglass v1.1.1 / Hyprland 0.57 系**。プラグインは Hyprland の内部描画 API に依存するため、Hyprland と関連ライブラリに対応する版を使用する。更新時には互換性と描画を再確認する。版チェックの強制回避はしない。
 
-library は Hyprglass のインストール、ロード、検出、設定ファイルの変更、reload を実行しない。導入済みでも無効・停止状態では背景効果は出ない。通常の GPUI 描画だけを代替の液体ガラスとして扱わない。
+library は Hyprglass のインストール、ロード、検出、設定ファイルの変更、reload を実行しない。導入済みでも無効・停止状態では背景効果は出ない。通常の GPUI 描画だけを液体ガラスとして扱わない。
 
 ## 導入と設定
 
@@ -38,7 +38,7 @@ hyprctl -j hyprglass status
 
 v1.1.1 の `hg.layer()` は reload の完了時に対象 namespace と個別設定を確定する。`hyprctl eval` が `ok` を返しただけでは適用済みと判断しない。
 
-`status` の `versionCheck`、`features.layers.active` と `reason` を確認する。shader は最初の描画まで `pending` の場合がある。バーを表示した後に `shaders = "ready"` と実描画数を確認する。
+`status` の `versionCheck`、`features.layers.active` と `reason` を確認する。shader は最初の描画まで `pending` の場合がある。Bar を表示した後に `shaders = "ready"` と実描画数を確認する。
 
 ```sh
 mise x -- cargo run -p bkss-ui --example bottom_bar -- --seconds 30
@@ -47,8 +47,6 @@ hyprctl hyprglass stats
 ```
 
 `hyprctl layers` の namespace は `bkss-bottom-bar` となる。runtime 所有のほかの surface は `bkss-overlay`、低レベルの `SurfaceDescriptor` は `bkss-core-surface` であり、この設定では対象にしない。
-
-以前の runtime は layer 宣言の namespace を `bkss-core-surface` に上書きしていた。既存の compositor rule がその名前を対象としている場合、BottomBar は `bkss-bottom-bar`、Overlay は `bkss-overlay` へ対象を移す。ただし Overlay へのガラス効果は後述の制約があるため、そのまま有効化しない。
 
 無効化する場合は設定例の最後を `hg.config({ layers = { enabled = false } })` に変更して reload する。ロード行だけ残して設定を削除すると、Hyprglass の既定値で通常 window への効果が有効になる可能性がある。完全に止める場合は plugin のロード設定も外す。
 
@@ -62,7 +60,7 @@ hyprctl hyprglass stats
 
 ## 今回適用しないもの
 
-Overlay は対象に含めない。画面全体を暗くする backdrop の alpha 0.4 は contour の対象になり、画面全体に効果が広がる。opacity animation では背景が threshold を跨ぎ、輪郭が途中で変化しうる。領域指定と遷移を確認せずに `bkss-overlay` を追加しない。既存の入力・外側クリック・animation の契約は変更しない。
+Overlay は対象に含めない。画面全体を暗くする backdrop の alpha 0.4 は contour の対象になり、画面全体に効果が広がる。opacity animation では背景が threshold を跨ぎ、輪郭が途中で変化しうる。領域指定と遷移を確認せずに `bkss-overlay` を追加しない。入力領域・外側クリック・animation は Surface の契約に従う。
 
 この設定は常用時の可読性、GPU 時間、消費電力、複数 display / mixed scaling の性能保証ではない。背景の屈折と文字の読みやすさは実際の背景で調整する。
 

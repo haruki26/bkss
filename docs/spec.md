@@ -1,4 +1,4 @@
-# BKSS Core Foundation 仕様
+# BKSS Foundation / BKSS-UI v0.1 仕様
 
 この文書は BKSS の初期 core + UI foundation に適用する規範的な挙動と受け入れ条件を定める。BKSS は Rust/GPUI による Hyprland 向けシェル構築ライブラリで、ガラスの背景効果は Hyprglass が担当する。ここにある型名やコード例は概念を示すもので、公開 API の確定シグネチャではない。
 
@@ -8,16 +8,16 @@ Overlay の keyboard 契約は single Wayland seat に限定し、OS/compositor 
 
 ## 範囲と境界
 
-`bkss-core` は Glass、runtime、reactive/resource、低レベルの surface と lifecycle 機構を提供する。`bkss-ui` は常設の上位 UI package として、公開 animation API と BottomBar/Overlay などの再利用可能な汎用 widget を提供し、core に依存する。core から ui への依存や循環依存は作らない。外部 integration は core の trait や source に接続する別 package とし、core は Time や Hyprland IPC に依存しない。GPUI の custom elements/components と便利な BKSS API の併用を許す。
+`bkss-core` は Glass、runtime、reactive/resource、低レベルの surface と lifecycle 機構を提供する。`bkss-ui` は core に依存する宣言的な desktop shell SDK とし、公開範囲は Shell、Effects、Animation に限定する。Container、Row、Column、Modal、Tooltip 等の汎用 layout／widget／UI preset は提供しない。core から ui への依存や循環依存は作らない。外部 integration は core の Source 契約に接続する別 package とし、core は特定 integration や Hyprland IPC に依存しない。GPUI の layout・style・描画・子要素合成をそのまま利用する。
 
 ## runtime 契約
 
-- runtime が update、subscription、redraw、animation の実行・スケジューリング、surface の cleanup を所有する。公開 animation 定義 API は ui に置き、ui の widget/surface wrapper が opacity の実行記述を core runtime に渡し、計算済みの sample を描画へ適用する。
+- runtime が update、subscription、redraw、animation の実行・スケジューリング、surface の cleanup を所有する。公開 Transition 定義 API は ui に置き、ui の Surface wrapper が opacity・logical translation X/Y の実行記述を core runtime に渡し、計算済みの sample を描画へ適用する。
 - resource は runtime のスコープで共有し、同じ resource を複数 active UI consumer が利用できる。source は最初の consumer で lazy に開始し、source handle の clone だけでは active consumer と数えない。
 - 最後の consumer が終了すると subscription/resource は停止する。exit animation 中の widget は unmount まで mounted なので購読を保持し、unmount 後に他の consumer がなければ停止する。次の activation は resource を再取得・再接続し、初期状態を得る。resource identity は source type + normalized configuration key で区別する。公開型や内部実装は未確定である。
 - 停止した activation から遅れて届く更新は activation identity で破棄し、再取得後の状態を壊さない。
 - test source は実際の Time integration を使わず、更新、unsubscribe、共有、cleanup を決定的に検証できる。
-- GPUI の event/notification、window、paint、task 等を優先して再利用する。独自の依存グラフや scheduler は、既存の機構で要件を満たせない場合に限って検討する。
+- event/notification、window、paint、task 等は GPUI の機能を利用する。独自の依存グラフや scheduler は設けない。
 
 ### 採用する技術方針
 
@@ -27,7 +27,7 @@ Overlay の keyboard 契約は single Wayland seat に限定し、OS/compositor 
 - 明示された State publication は毎回 dependent を更新し、等値による抑制はしない。UI の redraw は自然にまとめられてよい。複数 State の atomic transaction は約束せず、独自 graph も必要性が実証されるまで作らない。
 - pre-run の builder/source は inert descriptor とし、runtime-bound な State/entity は setup/mount で生成する。source handle の clone は consumer ではなく、mounted な binding の読み取り lease が consumer である。setup で作った State を callback が capture することは許す。
 - resource identity は source type + normalized configuration key とし、異なる設定の接続を分離しながら runtime 全体で共有する。停止した activation から遅れて届く更新は activation identity で破棄する。
-- ui の Animation は小さな opacity 実行記述へ変換し、core に汎用 property engine や過剰な trait 階層を導入しない。spring は初期 scope に含まれる必須機能とし、native 実装が BKSS 仕様と合わない場合は根拠を得た上で最小の runner を検討する。
+- ui の Transition は opacity・translation X/Y に限定した実行記述へ変換する。core runner が補間と spring 計算を実行し、汎用 property engine や別の scheduler は設けない。
 
 ## integration failure と終了
 
@@ -35,51 +35,49 @@ backend の接続または subscription の failure は Shell 全体の fatal er
 
 ## UI と surface
 
-Glass と低レベルの surface/lifecycle は core に置く。BottomBar、Overlay などの汎用 widget と公開 animation API は ui に置き、ui が core の機構を利用する。core の Glass builder 自体が ui の Animation に依存する設計にはしない。
+Glass の基礎描画と低レベルの Surface/lifecycle は core に置く。ui は shell/effects/animation の公開 API を提供し、core の機構を利用する。core の Glass builder 自体が ui の Transition に依存する設計にはしない。
 
-Shell の runtime entry point は core に置き、汎用の低レベル surface descriptor を受け取る。`.bottom_bar(...)` や `.overlay(...)` の宣言的な便利 API は、ui の拡張 API（`ShellExt`/prelude は名称案）として提供し、core から ui へ依存しない。初期の Shell/State binding は runtime 上でのみ有効とし、直接 GPUI と組み合わせる setup の逃げ道は残すが、context の具体型や呼び出し方法は未確定である。
+Shell の runtime entry point は core に置く。ui の ShellSurface／Bar／Overlay は inert な Surface 宣言であり、明示的な runtime 登録時に生成を開始する。通常の GPUI Element を child に置くだけで独立した native Surface を生成しない。宣言は再利用可能な設定と style を保持し、消費される Div／AnyElement の木は保持しない。fallible content factory が display／mount ごとの view を生成し、その render が毎回新しい GPUI content を組み立てる。Styled はその内部 root に適用し、ParentElement による合成は新しい content や Glass element で行う。
 
-### BottomBar（ui widget）
+### Bar
 
-静的 Glass を表示する layer-shell surface。logical height 分を exclusive zone に予約し、keyboard focus は要求しない。display ごとの選択と bounds を扱う。複数 display は起動時に接続済みの全対象を同時に受け入れる。
+画面端に配置する layer-shell Surface。上下左右の辺を扱い、既定は下端、Layer::Top、keyboard None とする。厚みは確定 logical px 専用型で指定し、auto／割合指定を型で排除する。厚みは有限かつ1 logical px以上とし、数値は副作用前に検証する。GPUI の h／w は内部 content の style であり、native Surface の厚みと予約量を上書きしない。表示・終了・途中反転は Overlay と同じ core controller を使い、登録時に対象 Output への初回表示を要求する。
 
 **surface 取得の遅延**: Shell は外部 source の初回取得を待たずに表示できる一方、layer-shell surface は必要な display が列挙されてから作成する。display 準備前に surface 作成を試みず、準備後に一度だけ作成する。
 
-### Overlay（ui widget）
+### Overlay / ShellSurface
 
-`OverlayDefinition` は inert な設定で、display ごとの fallible content factory は mount 時に一度実行する。公開 API は `OverlayRuntimeHandleExt::mount_overlay(definition, factory, cx)` と、display 指定の `OverlayHandle::open(display, cx)` / `close(display, cx)` である。外部 handle は runtime を延命しない。core runtime は動的 registration、display readiness、generation、pending/mounted surface の所有・cleanup を担い、ui は definition、display-local state、rendering を担う。mounted content が resource binding/lease を所有し、同じ runtime scope 内の resource sharing と最後の lease での停止は既存契約に従う。
+Overlay は登録時には閉じており、display 指定の handle で表示・非表示を要求する。既定は Layer::Overlay、exclusive zone 0、透明背景、keyboard None、Transition なし。Glass は自動的に挿入せず、content 側で明示的に合成する。一般の ShellSurface は Surface 設定と初期表示を明示できる。外部 handle は runtime を延命しない。core runtime は動的 registration、display readiness、generation、pending/mounted Surface の所有・cleanup を担う。mounted content が resource binding/lease を所有し、resource は runtime scope 内で共有され、最後の lease の解放で停止する。
 
-同じ definition でも core runtime が display ごとの lifecycle と visibility を独立に管理し、各 display の content factory を mount 時に実行する。`KeyboardFocus::None | Interactive` は definition 作成時に明示する。Interactive は surface 作成時の `OnDemand` を要求し、None は `None` で作成する。初期契約は single seat であり、BKSS は overlay 間の keyboard arbitration、seat ごとの ordering、native activation/focus、focus restoration を行わない。compositor が実際の focus と同一 layer 内の visual order を決める。ユーザー click は通常の入力であり、redundant open は no-op で surface を raise しない。
+同じ宣言でも core runtime が display ごとの lifecycle と visibility を独立に管理し、各 display の content factory を mount 時に実行する。keyboard interactivity は作成時に設定し、OnDemand は通常の user-managed focus を要求するが自動 focus は保証しない。初期契約は single seat であり、BKSS は Surface 間の keyboard arbitration、seat ごとの ordering、native activation/focus、focus restoration を行わない。compositor が実際の focus と同一 Layer 内の visual order を決める。redundant show は no-op で Surface を raise しない。layer、anchor、namespace、size policy、margin、予約、keyboard mode は登録時に固定し、GPUI style 変更から native 設定を再作成しない。
 
-Escape は実際に Escape event を受け取った mounted `Interactive` instance だけを閉じる。None instance への Escape 配達は約束しない。外部 handle、Escape、backdrop の close は同じ lifecycle 経路を使う。animation 未指定時と exit animation なしの場合は即時に閉じ、exit animation 指定時は完了までその display instance の surface・content・resource lease を保持する。
+Escape は実際に event を受け取った keyboard 対応の mounted instance で、子 content が event を消費しなかった場合に閉じる。None instance への Escape 配達は約束しない。外部 handle、Escape、backdrop の hide は同じ lifecycle 経路を使う。Transition 未指定時と Exit なしの場合は即時に閉じ、Exit 指定時は完了までその instance の Surface・content・resource lease を保持する。Exit 完了後は破棄し、次の表示では factory を再実行する。
 
-open は display ごとに `Closed | Pending | Mounted` lifecycle を持つ。repeated open は pending/mounted instance を activate、raise、recreate しない。exit 中の reopen は同じ mount generation・window・content を保持し、現在値と速度から enter へ retarget する。旧 exit completion は無効化する。pending close は factory を呼ばず取消し、完全に閉じた後の genuine open は新 generation で開始する。stale factory result はその正確な旧 window だけを回収し、callback 後に generation/runtime を再確認する。対象 instance close はその view/surface と lease のみ解放し、他 display や runtime の別 surface を閉じない。runtime shutdown/fatal は animation を即時取消し、pending を含む全 runtime-owned surface を cleanup し、fatal primary cause と attach host の所有権を維持する。display ごとの visibility/content teardown と runtime-wide resource sharing は独立に検証する。
+open は display ごとに `Closed | Pending | Mounted` lifecycle を持つ。repeated open は pending/mounted instance を activate、raise、recreate しない。exit 中の reopen は同じ mount generation・window・content を保持し、現在値と速度から enter へ retarget する。反転前の exit completion は無効化する。pending close は factory を呼ばず取消し、完全に閉じた後の genuine open は新 generation で開始する。stale factory result はその generation の window だけを回収し、callback 後に generation/runtime を再確認する。対象 instance close はその view/surface と lease のみ解放し、他 display や runtime の別 surface を閉じない。runtime shutdown/fatal は animation を即時取消し、pending を含む全 runtime-owned surface を cleanup し、fatal primary cause と attach host の所有権を維持する。display ごとの visibility/content teardown と runtime-wide resource sharing は独立に検証する。
 
 ## Geometry / Input API
 
-### BottomBar
+### Bar
 
-BottomBar は display 下端に anchor する常設 layer-shell surface である。視覚的な Glass 領域と layer surface の allocation 領域は分離して考える。
+視覚的な content と native allocation は分離する。Bar の既定配置は下端だが、上端・左端・右端へ変更可能とする。以下の長手方向と厚み方向は、選択した辺に応じて入れ替わる。
 
 - **Width policy（可逆的 default）**
-  - `FullDisplayWidth`: Glass visual width を display 幅いっぱいに伸ばす。
-  - `FloatingContentWidth`: 内容幅に合わせた Glass visual width。layer surface 自体は display 全幅を取る可能性があるが、Glass の描画領域は content width + padding までに制限する。
-  - 初期 default は `FloatingContentWidth` とする。
+  - 長手方向いっぱいに伸ばす配置と、content に合わせる floating 配置を扱う。
+  - floating 配置では content の上限と Start／Center／End 相当の alignment を指定できる。native Surface の長手方向の allocation は伸ばしたまま、描画と入力を content に限定できる。
 
 - **Margins / alignment**
-  - 下端 anchor は固定。optional な logical margins（left, right, bottom）を持つ。margin は視覚的な Glass の位置を決めると同時に、reserve 計算にも使う。
-  - `FloatingContentWidth` では horizontal alignment を `Center | Left | Right` とし、margin と合わせて配置する。
+  - logical margin で content の位置を決める。予約辺側の margin は Surface allocation と予約量にも含め、二重加算しない。
+  - margin と thickness 個別の値だけでなく、それらの和も副作用前に検証する。
 
 - **Reservation**
-  - `reserve` は default ON。OFF にすると exclusive zone を 0 にし、アプリケーションウィンドウと重ねる。
-  - 予約高さは「bar の logical height + bottom margin」のみとし、shadow は含めない。layer surface の実ピクセル高さは shadow 込みでも、compositor への exclusive zone 報告が shadow を重複計算しないよう注意する。
+  - 自動予約は Bar に限定する。既定は厚み＋予約辺の margin、shadow は除外する。exclusive zone の明示的な上書きも許可する。
+  - 予約は Enter 前から Exit 完了まで維持し、animation の進捗から再計算しない。非表示完了による Surface の破棄で解放する。一般の ShellSurface は予約を明示し、Overlay の既定値は0とする。
 
 - **Display bounds / scale**
   - geometry は logical units で宣言する。display scale は platform 適用後のピクセル計算に反映する。複数 display では各 display の bounds/scale を独立に扱う。
 
 - **Pointer hit area（実現性注意）**
-  - 理想的にはポインタヒット領域は visual Glass 領域に限定したい。
-  - `FloatingContentWidth` で layer surface が display 全幅のままの場合、透明な allocation 領域がクリックを横取りする可能性がある。visual 領域に限定した input region を優先し、実現性がない場合の fallback は利用者が承認した条件付き選択に従う。不可視入力層でクリック妨害を回避してはならない。
+  - input region は移動・clip 後の content bounds に限定し、透明な allocation 全体で入力を横取りしない。不可視入力層による回避策は用いない。
 
 ### Overlay
 
@@ -91,15 +89,15 @@ BottomBar は display 下端に anchor する常設 layer-shell surface であ�
   - viewport を超える content はその configured local viewport 内で clip する。利用者は明示的に scroll container を選べる。自動的な文字サイズ縮小（typography scaling）や賢い reposition は行わない。
 - **Scale**
   - 各 display の scale に応じて logical size を pixel size に変換し、clamp は pixel 換算後の configured viewport bounds で行う。
-- **Reservation / BottomBar relation**
-  - Overlay は exclusive zone を予約しない。予約付き BottomBar を避ける配置が必要な場合は、Overlay を開く前に bar の初期 allocation/reservation が安定していることを要求する。
-  - compositor の layer order は物理的に BottomBar の背後へ積む保証ではない。同一 layer の順序は compositor が決める。非予約 bar は Overlay に隠れたり入力を妨げられたりし得る。予約の後続変化に対する adaptive relayout/resizing は保証しない。実際に viewport resize event を受けた場合は、その時点の viewport に追従する。
+- **Reservation / Bar relation**
+  - Overlay の既定 exclusive zone は0。予約付き Bar を避ける配置が必要な場合は、Overlay を開く前に Bar の初期 allocation/reservation が安定していることを要求する。
+  - compositor の Layer order は物理的に Bar の背後へ積む保証ではない。同一 Layer の順序は compositor が決める。非予約 Bar は Overlay に隠れたり入力を妨げられたりし得る。予約の後続変化に対する adaptive relayout/resizing は保証しない。実際に viewport resize event を受けた場合は、その時点の viewport に追従する。
 
 ### Input modes
 
 - **Keyboard mode**
   - `None`: surface creation mode `None` を使い、keyboard input を要求しない。keyboard 配達・Escape は約束しない。pointer click-through の指定でもない。
-  - `Interactive`: surface creation mode `OnDemand` を使う。これは BKSS の keyboard arbitration や OS activation/focus 成功保証ではない。実際の focus は compositor が決め、focus 取得・復帰を理由とする surface 再作成はしない。
+   - `OnDemand`: 通常の focus を要求する。これは BKSS の keyboard arbitration や OS activation/focus 成功保証ではない。実際の focus は compositor が決め、focus 取得・復帰を理由とする Surface 再作成はしない。
 
 - **Outside-close backdrop（pointer interactive overlay）**
   - default OFF。opt-in のみ。
@@ -114,7 +112,7 @@ BottomBar は display 下端に anchor する常設 layer-shell surface であ�
 
 pointer / keyboard の入力配達は CF-17 と CF-18 に従う。検証が必要な実現性・backend 固有の事項は、公開仕様ではなく実装者向け確認事項として記録する。
 
-## 公開 API 草案（概念名・未コンパイル）
+## 宣言と描画の境界
 
 ```text
 State<T>                   // setup/mount で生成、clone は同じ cell を共有
@@ -123,34 +121,26 @@ Reactive<A>.map(f) -> Reactive<B>
 Reactive<A>.combine(Reactive<B>, f) -> Reactive<C>
 SourceState<T>              // 取得前 / 取得済みの値を表す状態
 SourceDescriptor<T>         // 宣言時には接続せず、利用開始時に接続
-OverlayHandle::open(display, cx) -> Result<(), SurfaceRequestError>
-OverlayHandle::close(display, cx) -> Result<(), SurfaceRequestError>
-OverlayDefinition::new(keyboard: KeyboardFocus)
-OverlayRuntimeHandleExt::mount_overlay(definition, factory, cx) -> Result<OverlayHandle, ShellError>
+ShellSurface / Bar / Overlay       // inert な設定・style・Transition
+Surface の登録 + content factory   // display ごとに独立した mounted view を生成
+Surface の handle                 // display 指定で表示・非表示
 Shell::run(...) -> Result<(), ShellError>
 
-BottomBarWidth::FullDisplayWidth
-BottomBarWidth::FloatingContentWidth { max_logical_width, horizontal_alignment }
-BottomBarGeometry { width, logical_height, margins, reserve }
-OverlayPlacement::Center
-OverlayPlacement::Anchor { edges, offset }
-OverlayGeometry { placement, max_logical_size, oversized }
-KeyboardFocus::None | KeyboardFocus::Interactive
-PointerDismiss::Disabled | PointerDismiss::Backdrop  // consumes click
+Bar の厚み                       // 確定 logical px 専用型
+GPUI Anchor / Layer / KeyboardInteractivity
+GPUI Div / Styled / ParentElement  // content の構築・合成
+Output の選択                     // 起動時の display snapshot、hotplug なし
 
 GlassStyle { radius, opacity, tint, border, rim, inner_highlight, inner_shadow }
 GlassStyle::with_hover(partial) -> GlassStyle
 GlassStyle::with_pressed(partial) -> GlassStyle
 GlassStyle::with_focus(partial) -> GlassStyle
 
-enum Timing {
-    Easing { duration_ms: u64, curve: EasingCurve },
-    Spring { stiffness: f32, damping: f32, mass: f32, max_duration_ms: u64 },
-}
-
-Animation::enter(Timing)
-Animation::exit(Timing)
-Animation::transition(Timing)  // enter と逆 exit
+Transition::fade()
+Transition::slide_up() / slide_down() / slide_left() / slide_right()
+Transition::duration(Duration) / spring(SpringPreset)
+SpringPreset::Smooth / Snappy / Bouncy
+transition / enter_transition / exit_transition
 ```
 
 概念的には inert な builder と source descriptor を先に作り、setup/mount で `State` と entity を runtime に束縛する。それを複数 display の独立 widget instance に渡し、State handle を clone して同じ cell を共有する。GPUI component composition はこの API に限定せず、そのまま利用できる。global に definition を mutable singleton として置く設計は採らない。上の例は説明用で、コンパイル可能性を示すものではない。
@@ -203,21 +193,27 @@ hover / pressed / focus などの外観変化は、**ユーザーがその状態
 
 Hyprglass の導入・ロード・設定・reload は利用者の環境管理の責務とする。library が `hyprctl` を呼び出したり設定ファイルを書き換えたりせず、利用可否の自動検出も行わない。Hyprglass が利用できない場合の背景効果は保証せず、他 compositor 向けの代替ガラス backend は設けない。通常の GPUI 描画だけが残ることを、液体ガラスへの代替表示として扱わない。
 
-標準設定の適用対象は namespace `bkss-bottom-bar` の BottomBar とする。core の layer 生成は `LayerSurfaceConfig.options.namespace` を保持し、Overlay の `bkss-overlay` と分離する。`SurfaceDescriptor` の固定 namespace `bkss-core-surface` は変更しない。
+標準設定の適用対象は namespace `bkss-bottom-bar` の Bar とする。core の layer 生成は `LayerSurfaceConfig.options.namespace` を使用し、Overlay の `bkss-overlay` と分離する。`SurfaceDescriptor` の namespace は `bkss-core-surface` とする。
 
-同一 surface 内の widget 間屈折は対象外とする。Overlay の backdrop と opacity animation は alpha による輪郭推定と干渉するため、今回の設定例には含めない。既存の Overlay の入力・dismiss・animation の契約は維持する。設定と適用上の制約は [Hyprglass 連携](hyprglass.md)を参照。
+同一 surface 内の widget 間屈折は対象外とする。Overlay の backdrop と opacity animation は alpha による輪郭推定と干渉するため、標準設定例の対象に含めない。Overlay の入力・dismiss・animation は Surface の契約に従う。設定と適用上の制約は [Hyprglass 連携](hyprglass.md)を参照。
 
 ## animation
 
-公開 animation API は ui に置く。アニメーションは opt-in の純粋な定義として enter、exit、transition に attach する。対象 property は opacity、補間は linear/easing/spring とする。実行、lifecycle との接続、スケジューリングは core runtime が担う。transition は enter 定義と、その逆向きの exit 定義を設定する。同じ target への後続 builder assignment が勝つ。デフォルトではアニメーションしない。途中で再 open した場合は現在値から新しい target へ進み、endpoint へ jump しない。
+公開 Transition API は ui に置く。対象 property は opacity と logical translation X/Y。core runner が補間を実行し、runtime が lifecycle、スケジューリング、単一 completion を所有する。transition は Enter と逆方向 Exit の両方を設定し、後続 enter_transition／exit_transition はその側だけを置き換える。デフォルトでは animation なし。reverse_on_exit は提供しない。途中再表示は現在値から新しい target へ進み、endpoint へ jump しない。
+
+Fade と上下左右の Slide を提供する。slide_up は下から、slide_down は上から、slide_left は右から、slide_right は左から現れる。Slide は固定 Surface 内の content の layout／hitbox を移動し、Surface 外への描画・移動は保証しない。既定距離は上下が測定した高さ、左右が幅。有限で非負の logical px に上書きできる。
+
+最初の有効な layout で未変形 content の寸法を測定して plan を解決し、その時点から Enter の clock を開始する。初回 frame から初期 opacity／移動量を適用し、configure 待ちの間に animation を消費しない。距離は mounted instance ごとに固定し、次の mount で再解決する。placement／clip／input region は各 frame の viewport と測定結果へ追従する。
+
+content の移動後 bounds と viewport の交差から input region を計算する。backdrop は固定し、opacity だけでは入力を無効化しない。複数 property の phase はすべての channel が完了した時に一度だけ完了する。opacity は描画値を [0,1] に clamp するが、translation の通常の overshoot は clamp しない。描画用 f32 で有限値として表現できない sample は error とする。
 
 ### timing kind
 
-`Timing` は `Easing` と `Spring` を mutually exclusive にする。spring に duration を与えても固定 duration として動作させない。
+Easing と Spring は mutually exclusive にする。後続 timing 指定で切り替え、spring に duration を固定時間として併用しない。
 
 ```text
-enum Timing {
-    Easing { duration_ms: u64, curve: EasingCurve },
+enum TimingConcept {
+    Easing { duration: Duration, curve: EasingCurve },
     Spring { stiffness: f32, damping: f32, mass: f32, max_duration_ms: u64 },
 }
 ```
@@ -225,12 +221,14 @@ enum Timing {
 ### easing
 
 - default duration: 160ms ease-out。
-- duration は >= 0 の有限値。0 は即時。
+- duration は Duration の精度を保持し、ミリ秒未満を切り捨てない。0 は即時。
 - easing 時は指定した duration を再適用する。
 
 ### spring（minimal physical model）
 
 spring は damped harmonic oscillator の物理パラメータを公開する。これは GPUI native 実装の主張ではなく、BKSS ui レイヤーの仕様である。
+
+UI は Smooth／Snappy／Bouncy の preset を提供し、core の spring solver の実行記述へ変換する。以下は実行記述の数値契約である。
 
 - パラメータ: `stiffness > 0`, `damping > 0`（finite）, `mass > 0`, `max_duration_ms > 0`（finite）。
 - 初期値: `mass = 1.0`, `stiffness = 300.0`, `damping = 30.0`, `max_duration_ms = 2000`。調整可能な仮値である。
@@ -249,11 +247,11 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 | ID | 要件 | 受け入れ条件 |
 |---|---|---|
 | CF-01 | core/ui 境界 | core + ui の foundation が特定 integration なしで build/API 検証でき、ui が core に依存し core から ui へ依存しない |
-| CF-02 | Glass | GPUI の tint・明示装飾・子 content の契約を維持し、設定済み Hyprglass により BottomBar の背後の画面へ背景効果を適用できる |
-| CF-03 | BottomBar | 起動時の複数 display に layer-shell surface、logical-height の予約、非フォーカスを確認できる |
+| CF-02 | Glass | GPUI が tint・明示装飾・子 content を描画し、設定済み Hyprglass が Bar の背後の画面へ背景効果を適用する。要素ごとの背景 sampling・個別 intensity は保証しない |
+| CF-03 | Bar | 起動時の複数 display に layer-shell Surface、型付き厚み、四辺の配置、予約、既定の非フォーカスを確認できる |
 | CF-04 | Overlay | display 別 open/close、独立 visibility/content/lifecycle、definition 時の keyboard mode 選択、実際に配達された Escape による Interactive instance close を確認できる |
 | CF-05 | lifecycle | exit 完了前に破棄せず、exit なしは即時 close、反復要求、現在値からの retarget、stale completion 防止をテストできる |
-| CF-06 | animation | opt-in の opacity を fake clock で検証し、未指定時は即時状態になる |
+| CF-06 | animation | opt-in の opacity／translation X/Y を fake clock で検証し、未指定時は即時状態、複数 channel は単一 completion になる |
 | CF-07 | reactive | test source の update、unsubscribe、resource sharing、cleanup を検証でき、最後の consumer 後に停止し次回利用で再取得する |
 | CF-08 | displays | 起動時に接続済み複数 display を同時表示できる。hotplug は対象外と明記する |
 | CF-09 | fatal integration failure | acquisition/subscription の開始時・開始後 failure が原因付きで伝播し、Shell 全体を終了する。cleanup は重複せず、shutdown 中に別 backend を開始しない |
@@ -262,15 +260,17 @@ spring は damped harmonic oscillator の物理パラメータを公開する。
 | CF-12 | display / single-seat keyboard | 二 display の独立 visibility/content teardown、共有 resource、None/Interactive creation mode と actual delivered-key recipient を検証できる。BKSS seat ordering/arbitration、native activation/focus restoration は保証しない |
 | CF-13 | State/activation | ready 初期値、clone handle による同一 cell 更新、停止後 activation の stale update 破棄を検証できる |
 | CF-14 | Shell 終了 | fatal cause/context を `Result<(), ShellError>` で返し、library が process exit せず、cleanup 中に decorative animation を待たないことを検証できる |
-| CF-15 | BottomBar geometry | 二つの monitor size / 異なる logical scale で、reserve ON/OFF、FullDisplayWidth/FloatingContentWidth、logical margins、bottom anchor、shadow を exclusive zone に含めないことを検証できる |
+| CF-15 | Bar geometry | 二つの monitor size / 異なる logical scale で、予約の自動計算／明示上書き、full／floating content、logical margins、四辺 anchor を確認し、style h/w と Surface 厚みの分離、shadow の予約除外、Enter 前から Exit 完了までの予約保持を検証できる |
 | CF-16 | Overlay geometry | configured local viewport 中央 default、explicit anchor/offset、configured local viewport/scale による pixel-clamp と clip、明示的 scroll container、自動 shrink/typography scaling なしを検証できる。global usable bounds は前提にしない |
-| CF-17 | Input modes | None/Interactive creation semantics と actual key delivery を区別する。backdrop opt-in/default OFF、ON 時 local viewport 内 content-exterior click を消費し app に転送せず、OFF 時 input region が content のみであることを検証できる。native focus/activation、outside-viewport capture、BottomBar behind-order は保証しない。既存 BottomBar の visual Glass hit area intent と、透明 allocation が input を横取りしうる gap は別途記録する |
+| CF-17 | Input modes | 作成時の keyboard mode と actual key delivery を区別する。backdrop opt-in/default OFF、ON 時 local viewport 内 content-exterior click を消費し app に転送せず、OFF 時 input region が移動・clip 後の content のみであることを検証できる。native focus/activation、outside-viewport capture、Bar behind-order は保証しない |
 | CF-18 | 入力配達の検証ゲート | 実装前に GPUI/Wayland の input-region/layer-surface capability と probe evidence を確認し、source/probe だけで native acceptance を主張しない。実装後は actual native example で BottomBar と Overlay の pointer/keyboard delivery を観察・記録する。headless/fake test は native 配達の証拠としない |
 | CF-19 | Glass style contract | hover/pressed/focus の外観変化はユーザーが明示指定した場合のみ適用され、Glass 自体は自動効果を持たない。base -> hover -> pressed の順に partial override し、focus は最後に独立適用する。Glass style があるだけで container が focusable/clickable にならない。opacity と tint alpha の乗算ルールを検証できる |
-| CF-20 | animation timing | Easing と Spring は mutually exclusive。easing default は 160ms ease-out、duration 0 は即時。spring は stiffness/damping/mass の物理パラメータを持ち、duration を silently override しないことを検証できる |
+| CF-20 | animation timing | Easing と Spring は mutually exclusive。easing default は160ms ease-out、Duration の精度を保持し、0は即時。途中反転は指定 duration を再適用する。SpringPreset が core solver の物理パラメータへ変換されることを検証できる |
 | CF-21 | spring convergence | settle は正規化位置誤差・速度両方 eps = 0.001 未満、距離 0 かつ速度 0 のときのみ即時 completed、正規化 span は max(|original span|, 1.0)、max elapsed 2000ms per genuine request で endpoint snap + 単一 completion、redundant open は max をリセットせず stale completion は破棄しない、30/60/144Hz で同一 elapsed サンプリングの tolerance 内一致を検証できる |
-| CF-22 | invalid params | stiffness <= 0、damping <= 0、mass <= 0、max_duration_ms == 0 など不正な spring パラメータ、および Glass/geometry の不正なパラメータは、panic や無言の sanitize ではなく error で拒否し、副作用を起こす前に検出する。easing duration は u64 なので負は表現不可、duration = 0 は許可 |
-| CF-23 | Glass reactive / immutable | `GlassStyle` は immutable clone input とし、reactive な個別プロパティ変更で再描画できる。ui Animation 未指定時は状態変化が即時反映することを検証できる |
+| CF-22 | invalid params | 不正な spring・Glass・geometry・厚み・距離は panic や無言の sanitize ではなく副作用前に error で拒否する。厚み／margin の和も検証する。easing Duration の0は許可する。実行中に translation sample が描画型で有限値として表現不能になった場合も error とし、通常の overshoot は clamp しない |
+| CF-23 | Glass reactive / immutable | `GlassStyle` は immutable clone input とし、reactive な個別プロパティ変更で再描画できる。Transition 未指定時は状態変化が即時反映することを検証できる |
+| CF-24 | 宣言と生成 | Surface 宣言時は window／factory が動かず、display／mount ごとに fresh content を生成する。Styled は content に委譲し、native 設定は登録時に固定される |
+| CF-25 | 測定と Slide | 最初の有効な layout で距離を解決し、その時点から Enter を開始する。初回 frame の opacity／移動量、移動後の子 hitbox と input region、viewport clip、固定 backdrop を headless test と native 観察に分けて確認する |
 
 ## 対象外
 

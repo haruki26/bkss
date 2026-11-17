@@ -74,7 +74,7 @@ operation.await?;
 
 最初の Result はキューへの受付結果、await 後の Result は操作結果です。`DispatchError` は停止済みまたはキュー満杯を、`OperationError` は activation の終了またはバックエンドの失敗を区別します。待機 future を破棄しても、実行開始済みの操作の取消は保証しません。
 
-Hyprland の既存操作は `Hyprland::switch_workspace(socket_dir, "2")?.await?` です。
+Hyprland の workspace 切り替えには `Hyprland::switch_workspace(socket_dir, "2")?.await?` を使います。
 
 ## 認証
 
@@ -93,11 +93,11 @@ BlueZ のエージェントは BKSS から開始する操作用であり、自�
 - バックライト変更は sysfs の書き込み権限に従います。BKSS は権限昇格や外部の特権コマンド実行を行いません。
 - GPU の未対応ベンダーや欠測項目は、対応状態や `Option` で区別します。未取得を架空の 0% として扱いません。
 - 使用量と GPU は内部サンプリングを用います。時計は指定精度の時刻境界で更新します。
-- source の接続・購読失敗は既存の Shell failure 契約に従います。通常の操作失敗とハードウェアの不在は区別します。
+- source の接続・購読失敗は Shell 全体の fatal error とし、runtime が resource と Surface を終了します。通常の操作失敗とハードウェアの不在は区別します。
 
 ## 自作 integration とモジュール
 
-自作の取得処理は公開 `Source` を実装します。標準表示が必要なら、その `Value` に `IntegrationView` を実装してください。別 thread からの更新には既存の `SourcePublisher::thread_bridge` を利用できます。
+自作の取得処理は公開 `Source` を実装します。標準表示が必要なら、その `Value` に `IntegrationView` を実装してください。別 thread からの更新には `SourcePublisher::thread_bridge` を利用できます。
 
 ライブラリ内部は `src/base/` に共通契約、`src/presets/<integration>/` に各連携を配置しています。`mod.rs` は module 宣言と再エクスポート専用です。単体テストは対象実装ファイル内、公開 API の統合テストは crate 直下の `tests/` に配置します。
 
