@@ -40,9 +40,11 @@ pub struct Channel {
     pub exit: Option<PropertyAnimation>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct AnimationPlan {
     pub opacity: Option<Channel>,
+    pub translation_x: Option<Channel>,
+    pub translation_y: Option<Channel>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -51,6 +53,8 @@ pub struct AnimationToken(pub(super) u64);
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AnimationSample {
     pub opacity: Option<f32>,
+    pub translation_x: Option<f32>,
+    pub translation_y: Option<f32>,
     pub running: bool,
     pub completion: Option<AnimationToken>,
 }
@@ -94,21 +98,24 @@ pub(super) fn validate_plan(plan: AnimationPlan) -> Result<(), RunnerError> {
             }
         })
     };
-    let valid_assignment = |assignment: Option<PropertyAnimation>| {
+    let valid_assignment = |assignment: Option<PropertyAnimation>, opacity: bool| {
         assignment.is_none_or(|assignment| {
             let [from, to] = assignment.endpoints;
             let endpoints_valid = from.is_finite()
                 && to.is_finite()
-                && (0.0..=1.0).contains(&from)
-                && (0.0..=1.0).contains(&to);
+                && (!opacity || ((0.0..=1.0).contains(&from) && (0.0..=1.0).contains(&to)));
             endpoints_valid && valid_timing(assignment.timing)
         })
     };
-    let valid_channel = |channel: Option<Channel>| {
-        channel
-            .is_none_or(|channel| valid_assignment(channel.enter) && valid_assignment(channel.exit))
+    let valid_channel = |channel: Option<Channel>, opacity: bool| {
+        channel.is_none_or(|channel| {
+            valid_assignment(channel.enter, opacity) && valid_assignment(channel.exit, opacity)
+        })
     };
-    if valid_channel(plan.opacity) {
+    if valid_channel(plan.opacity, true)
+        && valid_channel(plan.translation_x, false)
+        && valid_channel(plan.translation_y, false)
+    {
         Ok(())
     } else {
         Err(RunnerError::InvalidPlan)

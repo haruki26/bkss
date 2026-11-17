@@ -1,6 +1,6 @@
 use bkss_core::{
-    DynamicSurfaceHandle, LayerSurfaceConfig, MountedBinding, Shell, ShellError, Source,
-    SourceDescriptor, SourcePublisher, SourceState, SurfaceError,
+    DisplaySelection, DynamicSurfaceHandle, LayerSurfaceConfig, MountedBinding, Shell, ShellError,
+    Source, SourceDescriptor, SourcePublisher, SourceState, SurfaceError,
 };
 use gpui::{
     App, AppContext, Context, DisplayId, Render, Size, TestAppContext, Window, WindowOptions, div,
@@ -102,6 +102,49 @@ fn config() -> LayerSurfaceConfig {
         size: Size::new(px(40.), px(20.)),
         options: LayerShellOptions::default(),
     }
+}
+
+#[test]
+fn dynamic_exclusive_zone_accepts_wayland_unreserved_sentinel_and_rejects_invalid_values() {
+    let cx = TestAppContext::single();
+    let calls = Rc::new(Cell::new(0));
+    let factory_calls = Rc::clone(&calls);
+    let runtime = cx.update(|cx| {
+        Shell::attach(cx, |runtime, cx| {
+            for zone in [-1.0, 0.0, 0.5, 2_147_483_520.0] {
+                let mut surface_config = config();
+                surface_config.options.exclusive_zone = Some(px(zone));
+                let factory_calls = Rc::clone(&factory_calls);
+                runtime.register_dynamic_layer_surface(
+                    surface_config,
+                    Duration::from_secs(2),
+                    move |_, _, cx| {
+                        factory_calls.set(factory_calls.get() + 1);
+                        Ok(cx.new(|_| gpui::EmptyView))
+                    },
+                    cx,
+                )?;
+            }
+            for zone in [-2.0, -1.001, -0.5, f32::NAN, f32::INFINITY, 2_147_483_648.0] {
+                let mut surface_config = config();
+                surface_config.options.exclusive_zone = Some(px(zone));
+                let result = runtime.register_dynamic_layer_surface(
+                    surface_config,
+                    Duration::from_secs(2),
+                    |_, _, cx| Ok(cx.new(|_| gpui::EmptyView)),
+                    cx,
+                );
+                assert!(matches!(result, Err(ShellError::Setup(_))), "{zone}");
+            }
+            Ok(())
+        })
+        .unwrap()
+    });
+
+    assert_eq!(calls.get(), 0);
+    assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+    assert!(runtime.result().is_none());
+    cx.update(|cx| runtime.shutdown(cx));
 }
 
 #[test]
@@ -444,6 +487,85 @@ fn closing_pending_request_prevents_later_timeout_failure() {
     });
     cx.executor().advance_clock(Duration::from_secs(31));
     cx.run_until_parked();
+    assert_eq!(calls.get(), 0);
+    assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+    assert!(runtime.result().is_none());
+}
+
+#[test]
+fn startup_open_stages_connected_targets_synchronously_and_close_cancels_them() {
+    for selection in [
+        DisplaySelection::AllConnected,
+        DisplaySelection::Explicit(vec![DisplayId::new(1)]),
+    ] {
+        let cx = TestAppContext::single();
+        let calls = Rc::new(Cell::new(0));
+        let factory_calls = Rc::clone(&calls);
+        let surface_slot = Rc::new(RefCell::new(None));
+        let setup_surface = Rc::clone(&surface_slot);
+        let (runtime, surface, display) = cx.update(|cx| {
+            let display = cx.displays()[0].id();
+            let runtime = Shell::attach(cx, |runtime, cx| {
+                let surface = runtime.register_dynamic_layer_surface(
+                    config(),
+                    Duration::from_secs(2),
+                    move |_, _, cx| {
+                        factory_calls.set(factory_calls.get() + 1);
+                        Ok(cx.new(|_| gpui::EmptyView))
+                    },
+                    cx,
+                )?;
+                *setup_surface.borrow_mut() = Some(surface);
+                Ok(())
+            })
+            .unwrap();
+            (runtime, surface_slot.borrow_mut().take().unwrap(), display)
+        });
+        let selection = match selection {
+            DisplaySelection::AllConnected => DisplaySelection::AllConnected,
+            DisplaySelection::Explicit(_) => DisplaySelection::Explicit(vec![display]),
+        };
+        cx.update(|cx| {
+            surface.open_on_startup(selection, cx).unwrap();
+            surface.close(display, cx).unwrap();
+        });
+        cx.executor().advance_clock(Duration::from_secs(3));
+        cx.run_until_parked();
+        assert_eq!(calls.get(), 0);
+        assert!(runtime.result().is_none());
+        assert_eq!(cx.update(|cx| cx.windows().len()), 0);
+        cx.update(|cx| runtime.shutdown(cx));
+    }
+}
+
+#[test]
+fn invalid_startup_selection_has_no_surface_side_effects() {
+    let cx = TestAppContext::single();
+    let calls = Rc::new(Cell::new(0));
+    let factory_calls = Rc::clone(&calls);
+    let surface_slot = Rc::new(RefCell::new(None));
+    let setup_surface = Rc::clone(&surface_slot);
+    let (runtime, surface) = cx.update(|cx| {
+        let runtime = Shell::attach(cx, |runtime, cx| {
+            let surface = runtime.register_dynamic_layer_surface(
+                config(),
+                Duration::from_secs(2),
+                move |_, _, cx| {
+                    factory_calls.set(factory_calls.get() + 1);
+                    Ok(cx.new(|_| gpui::EmptyView))
+                },
+                cx,
+            )?;
+            *setup_surface.borrow_mut() = Some(surface);
+            Ok(())
+        })
+        .unwrap();
+        (runtime, surface_slot.borrow_mut().take().unwrap())
+    });
+    assert!(
+        cx.update(|cx| { surface.open_on_startup(DisplaySelection::Explicit(vec![]), cx) })
+            .is_err()
+    );
     assert_eq!(calls.get(), 0);
     assert_eq!(cx.update(|cx| cx.windows().len()), 0);
     assert!(runtime.result().is_none());

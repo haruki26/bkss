@@ -11,13 +11,11 @@ use bkss_core::{
     GlassColor, GlassStyle, MountedBinding, ReactiveSubscription, Shell, ShellError, Source,
     SourceDescriptor, SourcePublisher, SourceState, WeakRuntimeHandle,
 };
-use bkss_ui::{
-    KeyboardFocus, OverlayAnchors, OverlayDefinition, OverlayGeometry, OverlayHandle,
-    OverlayPlacement, OverlayRuntimeHandleExt,
-};
+use bkss_ui::effects::{GlassState, MountedGlass};
+use bkss_ui::{KeyboardInteractivity, Overlay, Placement, SurfaceHandle};
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Context, DisplayId, Render, Subscription, Task,
-    Window, WindowBounds, WindowOptions, div, prelude::*, px, rgb, size,
+    Window, WindowBounds, WindowOptions, div, point, prelude::*, px, rgb, size,
 };
 
 const USAGE: &str = "source_fallback_display [--display ID] [--seconds 1..300]
@@ -130,7 +128,7 @@ impl Source for DelayedSource {
 struct Session {
     runtime: WeakRuntimeHandle,
     display: Option<DisplayId>,
-    overlays: RefCell<Vec<OverlayHandle>>,
+    overlays: RefCell<Vec<SurfaceHandle>>,
     probe: Rc<Probe>,
     request_error: RefCell<Option<String>>,
     control: Cell<Option<AnyWindowHandle>>,
@@ -143,9 +141,9 @@ impl Session {
         let handle = self.overlays.borrow().get(index).cloned();
         if let Some(handle) = handle {
             let result = if open {
-                handle.open(display, cx)
+                handle.show(display, cx)
             } else {
-                handle.close(display, cx)
+                handle.hide(display, cx)
             };
             *self.request_error.borrow_mut() = result.err().map(|error| {
                 let message = format!(
@@ -345,12 +343,15 @@ struct Content {
     binding: MountedBinding<Items>,
     _subscription: ReactiveSubscription,
     _release: Subscription,
+    glass: MountedGlass,
 }
 
 impl Render for Content {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let (title, detail, color) = presentation(&self.binding.reactive().get(cx));
-        div().id("source-content").w(px(410.)).max_h(px(580.)).overflow_y_scroll().p_5()
+        div().id("source-content").w(px(410.)).max_h(px(580.)).overflow_y_scroll()
+            .child(self.glass.element(GlassState::default(), cx)
+            .w_full().p_5()
             .text_color(rgb(0xeaf0ed)).font_family("sans-serif").flex().flex_col().gap_4()
             .child(div().text_color(rgb(0xeec589)).child(format!("LAYER OVERLAY {} / {:?}", name(self.index), self.display)))
             .child(div().p_4().rounded_md().bg(rgb(0x20343d)).flex().flex_col().gap_2()
@@ -359,7 +360,7 @@ impl Render for Content {
             .child(overlay_controls(&self.session, self.display))
             .child(source_controls(&self.session))
             .child("A/B share one source. Closing the last consumer cancels its delay and stops acquisition.")
-            .child(stop_button(self.session.clone()))
+            .child(stop_button(self.session.clone())))
     }
 }
 
@@ -380,30 +381,29 @@ fn run(args: Args) -> Result<(), ShellError> {
         let style = GlassStyle::default()
             .with_tint(GlassColor::rgba(0.07, 0.13, 0.16, 0.99).map_err(ShellError::setup)?);
         for index in 0..2 {
-            let weak_runtime = runtime.downgrade();
             let descriptor = descriptor.clone();
             let session = session.clone();
-            let definition = OverlayDefinition::new(KeyboardFocus::Interactive)
-                .with_style(style.clone())
-                .with_geometry(OverlayGeometry {
-                    placement: OverlayPlacement::Anchor {
-                        edges: OverlayAnchors {
-                            left: index == 0,
-                            right: index == 1,
-                            ..Default::default()
-                        },
-                        offset: [if index == 0 { 24. } else { -24. }, 0.],
-                    },
-                    max_logical_size: Some([410., 580.]),
-                })
-                .map_err(ShellError::setup)?;
+            let content_style = style.clone();
+            let placement = Placement::Anchor {
+                edges: if index == 0 {
+                    bkss_ui::Anchor::LEFT
+                } else {
+                    bkss_ui::Anchor::RIGHT
+                },
+                offset: point(px(if index == 0 { 24. } else { -24. }), px(0.)),
+            };
+            let overlay = Overlay::new()
+                .keyboard_interactivity(KeyboardInteractivity::OnDemand)
+                .placement(placement)
+                .content_limit(size(px(410.), px(580.)));
             let content_session = session.clone();
-            let handle = runtime.mount_overlay(
-                definition,
-                move |display, _, cx| {
-                    let runtime = weak_runtime.upgrade().ok_or_else(|| {
+            let handle = overlay.mount(
+                &runtime,
+                move |instance, weak, _, cx| {
+                    let runtime = weak.upgrade().ok_or_else(|| {
                         ShellError::setup(io::Error::other("runtime already stopped"))
                     })?;
+                    let display = instance.display_id();
                     let binding = runtime.mount(&descriptor, cx)?;
                     println!(
                         "CONTENT_MOUNT overlay={} display={display:?} state={:?}",
@@ -433,6 +433,7 @@ fn run(args: Args) -> Result<(), ShellError> {
                             binding,
                             _subscription: subscription,
                             _release: release,
+                            glass: MountedGlass::new(content_style.clone(), cx),
                         }
                     }))
                 },

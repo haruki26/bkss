@@ -5,11 +5,10 @@ use std::{
     time::Duration,
 };
 
-use bkss_core::{MountedBinding, RuntimeHandle, Shell, Source, SourceDescriptor, SourcePublisher};
-use bkss_ui::{
-    Animation, EasingCurve, KeyboardFocus, OverlayDefinition, OverlayHandle,
-    OverlayRuntimeHandleExt, Timing,
+use bkss_core::{
+    MountedBinding, RuntimeHandle, Shell, ShellError, Source, SourceDescriptor, SourcePublisher,
 };
+use bkss_ui::{Overlay, SurfaceHandle, Transition};
 use gpui::{
     AnyWindowHandle, App, AppContext, Context, DisplayId, Render, TestAppContext, Window,
     WindowOptions, div, prelude::*, px,
@@ -66,20 +65,13 @@ impl Render for Content {
 }
 struct Mounted {
     runtime: RuntimeHandle,
-    handle: OverlayHandle,
+    handle: SurfaceHandle,
     display: DisplayId,
     window: AnyWindowHandle,
     counts: Rc<Counts>,
     publisher: Rc<RefCell<Option<SourcePublisher<Sample>>>>,
 }
-fn animation() -> Animation {
-    Animation::transition(Timing::Easing {
-        duration_ms: 1000,
-        curve: EasingCurve::Linear,
-    })
-    .opacity(0., 1.)
-}
-fn mount(cx: &TestAppContext, animation: Option<Animation>) -> Mounted {
+fn mount(cx: &TestAppContext, animation: Option<Transition>, enter_only: bool) -> Mounted {
     let counts = Rc::new(Counts::default());
     let publisher = Rc::new(RefCell::new(None));
     let source = SourceDescriptor::new(Sample {
@@ -88,18 +80,25 @@ fn mount(cx: &TestAppContext, animation: Option<Animation>) -> Mounted {
     });
     let (runtime, handle, display) = cx.update(|cx| {
         let runtime = Shell::attach(cx, |_, _| Ok(())).unwrap();
-        let mut definition = OverlayDefinition::new(KeyboardFocus::None);
-        if let Some(animation) = animation {
-            definition = definition.with_animation(animation).unwrap();
-        }
-        let weak = runtime.downgrade();
+        let definition = if let Some(animation) = animation {
+            if enter_only {
+                Overlay::new().enter_transition(animation)
+            } else {
+                Overlay::new().transition(animation)
+            }
+        } else {
+            Overlay::new()
+        };
         let captured = counts.clone();
-        let handle = runtime
-            .mount_overlay(
-                definition,
-                move |_, _, cx| {
+        let handle = definition
+            .mount(
+                &runtime,
+                move |_, weak, _, cx| {
                     captured.mounts.set(captured.mounts.get() + 1);
-                    let binding = weak.upgrade().unwrap().mount(&source, cx)?;
+                    let runtime = weak
+                        .upgrade()
+                        .ok_or_else(|| ShellError::setup(io::Error::other("runtime stopped")))?;
+                    let binding = runtime.mount(&source, cx)?;
                     Ok(cx.new(|_| Content {
                         _binding: binding,
                         counts: captured.clone(),
@@ -111,11 +110,13 @@ fn mount(cx: &TestAppContext, animation: Option<Animation>) -> Mounted {
         assert!(cx.windows().is_empty());
         assert_eq!(counts.starts.get(), 0);
         let display = cx.displays()[0].id();
-        handle.open(display, cx).unwrap();
+        handle.show(display, cx).unwrap();
         (runtime, handle, display)
     });
     cx.run_until_parked();
     let window = cx.update(|cx| cx.windows()[0]);
+    cx.simulate_window_resize(window, gpui::size(px(400.), px(300.)));
+    cx.run_until_parked();
     Mounted {
         runtime,
         handle,
@@ -127,29 +128,35 @@ fn mount(cx: &TestAppContext, animation: Option<Animation>) -> Mounted {
 }
 fn tick(cx: &TestAppContext, window: AnyWindowHandle, millis: u64) {
     cx.executor().advance_clock(Duration::from_millis(millis));
-    cx.update(|cx| {
-        window
-            .update(cx, |_, window, cx| window.simulate_next_frame(cx))
-            .unwrap()
-    });
+    if cx.update(|cx| cx.windows().contains(&window)) {
+        cx.update(|cx| {
+            window
+                .update(cx, |_, window, cx| window.simulate_next_frame(cx))
+                .unwrap()
+        });
+    }
     cx.run_until_parked();
 }
 
 #[test]
 fn exit_retains_content_and_lease_and_reopen_retargets_the_same_mount() {
     let cx = TestAppContext::single();
-    let mounted = mount(&cx, Some(animation()));
+    let mounted = mount(
+        &cx,
+        Some(Transition::fade().duration(Duration::from_secs(1))),
+        false,
+    );
     tick(&cx, mounted.window, 1000);
     cx.update(|cx| {
-        mounted.handle.close(mounted.display, cx).unwrap();
-        mounted.handle.close(mounted.display, cx).unwrap();
+        mounted.handle.hide(mounted.display, cx).unwrap();
+        mounted.handle.hide(mounted.display, cx).unwrap();
     });
     tick(&cx, mounted.window, 400);
     assert_eq!(mounted.counts.drops.get(), 0);
     assert_eq!(mounted.counts.stops.get(), 0);
     cx.update(|cx| {
-        mounted.handle.open(mounted.display, cx).unwrap();
-        mounted.handle.open(mounted.display, cx).unwrap();
+        mounted.handle.show(mounted.display, cx).unwrap();
+        mounted.handle.show(mounted.display, cx).unwrap();
     });
     tick(&cx, mounted.window, 700);
     assert_eq!(
@@ -160,12 +167,12 @@ fn exit_retains_content_and_lease_and_reopen_retargets_the_same_mount() {
     assert_eq!(mounted.counts.mounts.get(), 1);
     assert_eq!(mounted.counts.starts.get(), 1);
     tick(&cx, mounted.window, 300);
-    cx.update(|cx| mounted.handle.close(mounted.display, cx).unwrap());
+    cx.update(|cx| mounted.handle.hide(mounted.display, cx).unwrap());
     tick(&cx, mounted.window, 1000);
     assert!(cx.update(|cx| cx.windows().is_empty()));
     assert_eq!(mounted.counts.drops.get(), 1);
     assert_eq!(mounted.counts.stops.get(), 1);
-    cx.update(|cx| mounted.handle.open(mounted.display, cx).unwrap());
+    cx.update(|cx| mounted.handle.show(mounted.display, cx).unwrap());
     cx.run_until_parked();
     assert_eq!(mounted.counts.mounts.get(), 2);
     assert_eq!(mounted.counts.starts.get(), 2);
@@ -179,7 +186,11 @@ fn exit_retains_content_and_lease_and_reopen_retargets_the_same_mount() {
 fn shutdown_and_fatal_cancel_exit_without_waiting_and_preserve_the_host() {
     for fatal in [false, true] {
         let cx = TestAppContext::single();
-        let mounted = mount(&cx, Some(animation()));
+        let mounted = mount(
+            &cx,
+            Some(Transition::fade().duration(Duration::from_secs(1))),
+            false,
+        );
         tick(&cx, mounted.window, 1000);
         let host = cx.update(|cx| {
             cx.open_window(WindowOptions::default(), |_, cx| {
@@ -188,7 +199,7 @@ fn shutdown_and_fatal_cancel_exit_without_waiting_and_preserve_the_host() {
             .unwrap()
         });
         cx.update(|cx| {
-            mounted.handle.close(mounted.display, cx).unwrap();
+            mounted.handle.hide(mounted.display, cx).unwrap();
             if fatal {
                 mounted
                     .publisher
@@ -209,7 +220,7 @@ fn shutdown_and_fatal_cancel_exit_without_waiting_and_preserve_the_host() {
             assert!(error.to_string().contains("animation test failure"));
         }
         assert!(
-            cx.update(|cx| mounted.handle.open(mounted.display, cx))
+            cx.update(|cx| mounted.handle.show(mounted.display, cx))
                 .is_err()
         );
     }
@@ -218,10 +229,14 @@ fn shutdown_and_fatal_cancel_exit_without_waiting_and_preserve_the_host() {
 #[test]
 fn native_window_removal_cancels_exit_and_the_next_open_mounts_fresh_content() {
     let cx = TestAppContext::single();
-    let mounted = mount(&cx, Some(animation()));
+    let mounted = mount(
+        &cx,
+        Some(Transition::fade().duration(Duration::from_secs(1))),
+        false,
+    );
     tick(&cx, mounted.window, 1000);
     cx.update(|cx| {
-        mounted.handle.close(mounted.display, cx).unwrap();
+        mounted.handle.hide(mounted.display, cx).unwrap();
         mounted
             .window
             .update(cx, |_, window, _| window.remove_window())
@@ -230,7 +245,7 @@ fn native_window_removal_cancels_exit_and_the_next_open_mounts_fresh_content() {
     cx.run_until_parked();
     assert_eq!(mounted.counts.drops.get(), 1);
     assert_eq!(mounted.counts.stops.get(), 1);
-    cx.update(|cx| mounted.handle.open(mounted.display, cx).unwrap());
+    cx.update(|cx| mounted.handle.show(mounted.display, cx).unwrap());
     cx.run_until_parked();
     assert_eq!(mounted.counts.mounts.get(), 2);
     cx.update(|cx| mounted.runtime.shutdown(cx));
@@ -238,18 +253,21 @@ fn native_window_removal_cancels_exit_and_the_next_open_mounts_fresh_content() {
 
 #[test]
 fn missing_exit_is_immediate_and_pending_close_never_mounts_content() {
-    for animation in [
-        None,
-        Some(Animation::enter(Timing::default()).opacity(0., 1.)),
+    for (animation, enter_only) in [
+        (None, false),
+        (
+            Some(Transition::fade().duration(Duration::from_secs(1))),
+            true,
+        ),
     ] {
         let cx = TestAppContext::single();
-        let mounted = mount(&cx, animation);
+        let mounted = mount(&cx, animation, enter_only);
         cx.update(|cx| {
             let missing = DisplayId::new(999);
-            mounted.handle.open(missing, cx).unwrap();
-            mounted.handle.open(missing, cx).unwrap();
-            mounted.handle.close(missing, cx).unwrap();
-            mounted.handle.close(mounted.display, cx).unwrap();
+            mounted.handle.show(missing, cx).unwrap();
+            mounted.handle.show(missing, cx).unwrap();
+            mounted.handle.hide(missing, cx).unwrap();
+            mounted.handle.hide(mounted.display, cx).unwrap();
         });
         cx.run_until_parked();
         assert!(cx.update(|cx| cx.windows().is_empty()));

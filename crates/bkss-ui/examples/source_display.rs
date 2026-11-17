@@ -4,12 +4,13 @@
 //! Applications can supply SVG assets through GPUI; BKSS bundles no icons.
 use std::{io, time::Duration};
 
-use bkss_core::{Shell, ShellError, Source, SourceDescriptor, SourcePublisher};
-use bkss_integration::{Clock, ClockPrecision, ClockState, IntegrationView};
-use bkss_ui::{KeyboardFocus, OverlayDefinition, OverlayRuntimeHandleExt, SourceDisplay};
-use gpui::{
-    AnyElement, App, AppContext, Context, Entity, Render, Window, div, prelude::*, px, rgb,
+use bkss_core::{
+    MountedBinding, ReactiveSubscription, Shell, ShellError, Source, SourceDescriptor,
+    SourcePublisher, SourceState,
 };
+use bkss_integration::{Clock, ClockPrecision, ClockState, IntegrationView};
+use bkss_ui::{DisplaySelection, Overlay};
+use gpui::{AnyElement, App, AppContext, Context, Render, Window, div, prelude::*, px, rgb};
 
 #[derive(Clone)]
 struct Temperature(f32);
@@ -66,20 +67,33 @@ impl Source for DemoThermometer {
 }
 
 struct Readings {
-    clock: Entity<SourceDisplay<ClockState>>,
-    temperature: Entity<SourceDisplay<Temperature>>,
+    clock: MountedBinding<ClockState>,
+    temperature: MountedBinding<Temperature>,
+    _clock_subscription: ReactiveSubscription,
+    _temperature_subscription: ReactiveSubscription,
+}
+
+fn source_view<T: Clone + IntegrationView>(
+    binding: &MountedBinding<T>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    match binding.reactive().get(cx) {
+        SourceState::Loading => div().child("Loading…").into_any_element(),
+        SourceState::Ready(value) => value.render(window, cx),
+    }
 }
 
 impl Render for Readings {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .flex()
             .items_center()
             .gap_6()
             .p_3()
             .text_color(rgb(0xffffff))
-            .child(self.clock.clone())
-            .child(self.temperature.clone())
+            .child(source_view(&self.clock, window, cx))
+            .child(source_view(&self.temperature, window, cx))
     }
 }
 
@@ -87,27 +101,32 @@ fn main() -> Result<(), ShellError> {
     let clock = SourceDescriptor::new(Clock::new(ClockPrecision::Minute));
     let thermometer = SourceDescriptor::new(DemoThermometer);
     Shell::run(move |runtime, cx| {
+        let clock = clock.clone();
+        let thermometer = thermometer.clone();
         let weak = runtime.downgrade();
-        let overlay = runtime.mount_overlay(
-            OverlayDefinition::new(KeyboardFocus::None),
-            move |_, _, cx| {
-                let runtime = weak.upgrade().ok_or_else(|| {
-                    ShellError::setup(io::Error::other("runtime already stopped"))
-                })?;
-                let clock_binding = runtime.mount(&clock, cx)?;
-                let temperature_binding = runtime.mount(&thermometer, cx)?;
-                let clock = cx.new(|cx| {
-                    SourceDisplay::new(clock_binding, cx)
-                        .with_loading(|_, _| div().child("Loading clock…"))
-                        .with_render(|state, _, _| div().child(state.time.clone()))
-                });
-                let temperature = cx.new(|cx| SourceDisplay::new(temperature_binding, cx));
-                Ok(cx.new(|_| Readings { clock, temperature }))
-            },
-            cx,
-        )?;
+        let overlay = Overlay::new()
+            .outputs(DisplaySelection::AllConnected)
+            .mount(
+                &runtime,
+                move |_, _, _, cx| {
+                    let runtime = weak
+                        .upgrade()
+                        .ok_or_else(|| ShellError::setup(io::Error::other("runtime stopped")))?;
+                    let clock = runtime.mount(&clock, cx)?;
+                    let temperature = runtime.mount(&thermometer, cx)?;
+                    Ok(cx.new(|cx| Readings {
+                        _clock_subscription: clock.reactive().observe(cx, |_, _, cx| cx.notify()),
+                        _temperature_subscription: temperature
+                            .reactive()
+                            .observe(cx, |_, _, cx| cx.notify()),
+                        clock,
+                        temperature,
+                    }))
+                },
+                cx,
+            )?;
         for display in cx.displays() {
-            overlay.open(display.id(), cx).map_err(ShellError::setup)?;
+            overlay.show(display.id(), cx).map_err(ShellError::setup)?;
         }
         let weak = runtime.downgrade();
         cx.spawn(async move |cx| {

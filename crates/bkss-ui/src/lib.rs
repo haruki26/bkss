@@ -1,15 +1,13 @@
 //! Shell widgets built on BKSS core and ordinary GPUI content.
 
-mod animation;
-mod layout;
-mod ui;
+pub mod animation;
+pub mod effects;
+pub mod shell;
 
-pub use animation::{Animation, AnimationError, EasingCurve, Timing};
+pub use animation::{AnimationError, SpringPreset, Transition};
 pub use bkss_core::DisplaySelection;
-pub use layout::{
-    BottomBar, BottomBarAlignment, BottomBarGeometry, BottomBarGeometryError, BottomBarMargins,
-    BottomBarWidth, KeyboardFocus, OverlayAnchors, OverlayDefinition, OverlayGeometry,
-    OverlayGeometryError, OverlayHandle, OverlayPlacement, OverlayRuntimeHandleExt, PointerDismiss,
-    RuntimeHandleExt,
+pub use effects::Glass;
+pub use shell::{
+    Anchor, Bar, BarAlignment, KeyboardInteractivity, Layer, Output, Overlay, Placement,
+    ShellSurface, SurfaceConfigError, SurfaceHandle, Thickness,
 };
-pub use ui::SourceDisplay;

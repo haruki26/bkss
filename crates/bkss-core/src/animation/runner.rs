@@ -72,6 +72,8 @@ struct Active {
     phase: Phase,
     token: AnimationToken,
     opacity: Option<Motion>,
+    translation_x: Option<Motion>,
+    translation_y: Option<Motion>,
     completion_sent: bool,
 }
 
@@ -112,7 +114,17 @@ impl AnimationRunner {
             Phase::Enter => self.plan.opacity.and_then(|c| c.enter),
             Phase::Exit => self.plan.opacity.and_then(|c| c.exit),
         };
+        let translation_x = match phase {
+            Phase::Enter => self.plan.translation_x.and_then(|c| c.enter),
+            Phase::Exit => self.plan.translation_x.and_then(|c| c.exit),
+        };
+        let translation_y = match phase {
+            Phase::Enter => self.plan.translation_y.and_then(|c| c.enter),
+            Phase::Exit => self.plan.translation_y.and_then(|c| c.exit),
+        };
         let opacity_span = self.plan.opacity.map(channel_span).unwrap_or(1.0);
+        let translation_x_span = self.plan.translation_x.map(channel_span).unwrap_or(1.0);
+        let translation_y_span = self.plan.translation_y.map(channel_span).unwrap_or(1.0);
         let make_motion = |assignment: PropertyAnimation,
                            old: Option<Motion>,
                            original_span: f64|
@@ -144,6 +156,24 @@ impl AnimationRunner {
                     make_motion(assignment, previous.and_then(|a| a.opacity), opacity_span)
                 })
                 .transpose()?,
+            translation_x: translation_x
+                .map(|assignment| {
+                    make_motion(
+                        assignment,
+                        previous.and_then(|a| a.translation_x),
+                        translation_x_span,
+                    )
+                })
+                .transpose()?,
+            translation_y: translation_y
+                .map(|assignment| {
+                    make_motion(
+                        assignment,
+                        previous.and_then(|a| a.translation_y),
+                        translation_y_span,
+                    )
+                })
+                .transpose()?,
             completion_sent: false,
         };
         self.next_token = next_token;
@@ -158,11 +188,16 @@ impl AnimationRunner {
             self.last_now = Some(now);
             return Ok(AnimationSample {
                 opacity: None,
+                translation_x: None,
+                translation_y: None,
                 running: false,
                 completion: None,
             });
         };
-        let (opacity, running) = sample_motion(active.opacity.as_ref(), now);
+        let (opacity, opacity_running) = sample_motion(active.opacity.as_ref(), now, true)?;
+        let (translation_x, x_running) = sample_motion(active.translation_x.as_ref(), now, false)?;
+        let (translation_y, y_running) = sample_motion(active.translation_y.as_ref(), now, false)?;
+        let running = opacity_running || x_running || y_running;
         let completion = if !running && !active.completion_sent {
             active.completion_sent = true;
             Some(active.token)
@@ -173,6 +208,8 @@ impl AnimationRunner {
         self.last_now = Some(now);
         Ok(AnimationSample {
             opacity,
+            translation_x,
+            translation_y,
             running,
             completion,
         })
@@ -195,12 +232,24 @@ impl AnimationRunner {
     }
 }
 
-fn sample_motion(motion: Option<&Motion>, now: Duration) -> (Option<f32>, bool) {
+fn sample_motion(
+    motion: Option<&Motion>,
+    now: Duration,
+    opacity: bool,
+) -> Result<(Option<f32>, bool), RunnerError> {
     let Some(motion) = motion else {
-        return (None, false);
+        return Ok((None, false));
     };
     let (value, _, running) = motion.evaluate(now);
-    (Some(value.clamp(0.0, 1.0) as f32), running)
+    let sample = if opacity {
+        value.clamp(0.0, 1.0) as f32
+    } else {
+        value as f32
+    };
+    if !sample.is_finite() {
+        return Err(RunnerError::InvalidPlan);
+    }
+    Ok((Some(sample), running))
 }
 
 fn channel_span(channel: Channel) -> f64 {
@@ -247,7 +296,10 @@ mod tests {
     }
 
     fn plan(opacity: Option<Channel>) -> AnimationPlan {
-        AnimationPlan { opacity }
+        AnimationPlan {
+            opacity,
+            ..AnimationPlan::default()
+        }
     }
 
     #[test]
@@ -395,5 +447,49 @@ mod tests {
                 opacity.evaluate(Duration::from_millis(200)).1
             )
         );
+    }
+
+    #[test]
+    fn translation_retarget_preserves_position_and_velocity() {
+        let timing = spring(100.0, 10.0, 1.0, 2000);
+        let plan = AnimationPlan {
+            translation_x: channel(
+                assignment(0.0, 100.0, timing),
+                assignment(100.0, 0.0, timing),
+            ),
+            ..AnimationPlan::default()
+        };
+        let mut runner = AnimationRunner::new(plan).unwrap();
+        runner.request(Phase::Enter, Duration::ZERO).unwrap();
+        let now = Duration::from_millis(50);
+        let old = runner.active.unwrap().translation_x.unwrap();
+        let state = old.evaluate(now);
+        runner.request(Phase::Exit, now).unwrap();
+        assert_eq!(
+            runner.active.unwrap().translation_x.unwrap().origin,
+            (state.0, state.1)
+        );
+    }
+
+    #[test]
+    fn unrepresentable_translation_sample_does_not_advance_runner_state() {
+        let timing = spring(100.0, 1.0, 1.0, 2000);
+        let plan = AnimationPlan {
+            translation_x: channel(
+                assignment(0.0, f32::MAX, timing),
+                assignment(f32::MAX, 0.0, timing),
+            ),
+            ..AnimationPlan::default()
+        };
+        let mut runner = AnimationRunner::new(plan).unwrap();
+        let token = runner.request(Phase::Enter, Duration::ZERO).unwrap();
+        assert_eq!(
+            runner.sample(Duration::from_millis(200)),
+            Err(RunnerError::InvalidPlan)
+        );
+        assert_eq!(runner.last_now, Some(Duration::ZERO));
+        assert_eq!(runner.active.unwrap().token, token);
+        assert!(!runner.active.unwrap().completion_sent);
+        assert!(runner.sample(Duration::from_millis(1)).unwrap().running);
     }
 }

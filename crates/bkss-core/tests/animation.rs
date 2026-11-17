@@ -43,7 +43,10 @@ fn channel(enter: Option<PropertyAnimation>, exit: Option<PropertyAnimation>) ->
 }
 
 fn plan(opacity: Option<Channel>) -> AnimationPlan {
-    AnimationPlan { opacity }
+    AnimationPlan {
+        opacity,
+        ..AnimationPlan::default()
+    }
 }
 
 #[test]
@@ -84,6 +87,29 @@ fn validates_all_property_timings_and_endpoints() {
             Some(RunnerError::InvalidPlan)
         );
     }
+    for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+        for (translation_x, translation_y) in [
+            (channel(assignment(0.0, value, easing(10)), None), None),
+            (None, channel(assignment(0.0, value, easing(10)), None)),
+        ] {
+            assert_eq!(
+                AnimationRunner::new(AnimationPlan {
+                    translation_x,
+                    translation_y,
+                    ..AnimationPlan::default()
+                })
+                .err(),
+                Some(RunnerError::InvalidPlan)
+            );
+        }
+    }
+    assert!(
+        AnimationRunner::new(AnimationPlan {
+            translation_x: channel(assignment(-200.0, 350.0, easing(10)), None),
+            ..AnimationPlan::default()
+        })
+        .is_ok()
+    );
     assert!(
         AnimationRunner::new(plan(channel(
             assignment(0.0, 1.0, spring(1e20, 1e20, 1e20, 10)),
@@ -247,5 +273,107 @@ fn absent_channels_are_immediate_and_completion_is_once() {
     assert_eq!(
         runner.sample(Duration::from_secs(1)).unwrap().completion,
         None
+    );
+}
+
+#[test]
+fn translations_share_phase_token_and_complete_after_all_channels() {
+    let x = channel(
+        assignment(0.0, 100.0, easing(100)),
+        assignment(100.0, 0.0, easing(100)),
+    );
+    let y = channel(
+        assignment(0.0, 50.0, easing(200)),
+        assignment(50.0, 0.0, easing(200)),
+    );
+    let mut runner = AnimationRunner::new(AnimationPlan {
+        translation_x: x,
+        translation_y: y,
+        ..AnimationPlan::default()
+    })
+    .unwrap();
+    let token = runner.request(Phase::Enter, Duration::ZERO).unwrap();
+    let halfway = runner.sample(Duration::from_millis(100)).unwrap();
+    assert_eq!(halfway.translation_x, Some(100.0));
+    assert_eq!(halfway.translation_y, Some(25.0));
+    assert!(halfway.running);
+    assert_eq!(halfway.completion, None);
+    let done = runner.sample(Duration::from_millis(200)).unwrap();
+    assert_eq!(done.translation_y, Some(50.0));
+    assert!(!done.running);
+    assert_eq!(done.completion, Some(token));
+    assert_eq!(
+        runner
+            .sample(Duration::from_millis(300))
+            .unwrap()
+            .completion,
+        None
+    );
+}
+
+#[test]
+fn spring_translation_preserves_overshoot_and_retarget_state() {
+    let timing = spring(100.0, 1.0, 1.0, 2000);
+    let mut runner = AnimationRunner::new(AnimationPlan {
+        translation_x: channel(assignment(0.0, 1.0, timing), assignment(1.0, 0.0, timing)),
+        ..AnimationPlan::default()
+    })
+    .unwrap();
+    runner.request(Phase::Enter, Duration::ZERO).unwrap();
+    let time = Duration::from_millis(200);
+    let sample = runner.sample(time).unwrap();
+    assert!(
+        sample.translation_x.unwrap() > 1.0,
+        "expected spring overshoot"
+    );
+
+    runner.request(Phase::Exit, time).unwrap();
+    assert_eq!(
+        runner.sample(time).unwrap().translation_x,
+        sample.translation_x
+    );
+}
+
+#[test]
+fn translation_samples_reject_f32_overflow_in_both_directions() {
+    let timing = spring(100.0, 1.0, 1.0, 2000);
+    for endpoint in [f32::MAX, -f32::MAX] {
+        let mut runner = AnimationRunner::new(AnimationPlan {
+            translation_x: channel(
+                assignment(0.0, endpoint, timing),
+                assignment(endpoint, 0.0, timing),
+            ),
+            ..AnimationPlan::default()
+        })
+        .unwrap();
+        runner.request(Phase::Enter, Duration::ZERO).unwrap();
+        assert_eq!(
+            runner.sample(Duration::from_millis(200)),
+            Err(RunnerError::InvalidPlan)
+        );
+    }
+}
+
+#[test]
+fn submillisecond_easing_duration_remains_non_immediate() {
+    let mut runner = AnimationRunner::new(plan(channel(
+        assignment(
+            0.0,
+            1.0,
+            Some(PlanTiming::Easing {
+                duration: Duration::from_micros(500),
+                curve: EasingCurve::Linear,
+            }),
+        ),
+        None,
+    )))
+    .unwrap();
+    runner.request(Phase::Enter, Duration::ZERO).unwrap();
+    let halfway = runner.sample(Duration::from_micros(250)).unwrap();
+    assert_eq!(halfway.opacity, Some(0.5));
+    assert!(halfway.running);
+    assert_eq!(
+        runner.sample(Duration::from_micros(500)).unwrap().opacity,
+        Some(1.0)
     );
 }

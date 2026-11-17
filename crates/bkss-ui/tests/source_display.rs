@@ -4,12 +4,74 @@ use std::{
     rc::Rc,
 };
 
-use bkss_core::{Shell, Source, SourceDescriptor, SourcePublisher, SourceState};
-use bkss_integration::{ClockState, HyprlandState, IntegrationView, Usage};
-use bkss_ui::SourceDisplay;
-use gpui::{
-    AnyElement, App, AppContext, TestAppContext, Window, WindowOptions, div, prelude::*, rgb,
+use bkss_core::{
+    MountedBinding, ReactiveSubscription, Shell, Source, SourceDescriptor, SourcePublisher,
+    SourceState,
 };
+use bkss_integration::{ClockState, HyprlandState, IntegrationView, Usage};
+use gpui::{
+    AnyElement, App, AppContext, Context, Render, TestAppContext, Window, WindowOptions, div,
+    prelude::*, rgb,
+};
+
+type ReadyRenderer<T> = Box<dyn FnMut(&T, &mut Window, &mut Context<SourceView<T>>) -> AnyElement>;
+type LoadingRenderer<T> = Box<dyn FnMut(&mut Window, &mut Context<SourceView<T>>) -> AnyElement>;
+
+struct SourceView<T: Clone + 'static> {
+    binding: MountedBinding<T>,
+    _subscription: ReactiveSubscription,
+    ready: ReadyRenderer<T>,
+    loading: LoadingRenderer<T>,
+}
+
+impl<T: Clone + 'static> SourceView<T> {
+    fn new_with_render<E: IntoElement>(
+        binding: MountedBinding<T>,
+        cx: &mut Context<Self>,
+        mut render: impl FnMut(&T, &mut Window, &mut Context<Self>) -> E + 'static,
+    ) -> Self {
+        let subscription = binding.reactive().observe(cx, |_, _, cx| cx.notify());
+        Self {
+            binding,
+            _subscription: subscription,
+            ready: Box::new(move |value, window, cx| render(value, window, cx).into_any_element()),
+            loading: Box::new(|_, _| "Loading…".into_any_element()),
+        }
+    }
+
+    fn new(binding: MountedBinding<T>, cx: &mut Context<Self>) -> Self
+    where
+        T: IntegrationView,
+    {
+        Self::new_with_render(binding, cx, |value, window, cx| value.render(window, cx))
+    }
+
+    fn with_render<E: IntoElement>(
+        mut self,
+        mut render: impl FnMut(&T, &mut Window, &mut Context<Self>) -> E + 'static,
+    ) -> Self {
+        self.ready =
+            Box::new(move |value, window, cx| render(value, window, cx).into_any_element());
+        self
+    }
+
+    fn with_loading<E: IntoElement>(
+        mut self,
+        mut render: impl FnMut(&mut Window, &mut Context<Self>) -> E + 'static,
+    ) -> Self {
+        self.loading = Box::new(move |window, cx| render(window, cx).into_any_element());
+        self
+    }
+}
+
+impl<T: Clone + 'static> Render for SourceView<T> {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        match self.binding.reactive().get(cx) {
+            SourceState::Loading => (self.loading)(window, cx),
+            SourceState::Ready(value) => (self.ready)(&value, window, cx),
+        }
+    }
+}
 
 #[derive(Clone)]
 struct CustomState {
@@ -76,7 +138,7 @@ fn integration_elements_and_custom_content_render_updates_from_a_downstream_sour
         let binding = runtime.mount(&descriptor, cx).unwrap();
         assert!(matches!(binding.reactive().get(cx), SourceState::Loading));
         cx.open_window(WindowOptions::default(), |_, cx| {
-            cx.new(|cx| SourceDisplay::new(binding, cx))
+            cx.new(|cx| SourceView::new(binding, cx))
         })
         .unwrap();
         let binding = runtime.mount(&descriptor, cx).unwrap();
@@ -85,7 +147,7 @@ fn integration_elements_and_custom_content_render_updates_from_a_downstream_sour
         let custom_window = cx
             .open_window(WindowOptions::default(), |_, cx| {
                 cx.new(|cx| {
-                    SourceDisplay::new(binding, cx)
+                    SourceView::new(binding, cx)
                         .with_render(move |state, _, _| {
                             let text = format!("Item: {}", state.item.as_deref().unwrap_or("none"));
                             ready.borrow_mut().push(text.clone());
@@ -212,7 +274,7 @@ fn custom_renderer_accepts_values_without_an_integration_view() {
             .unwrap();
         cx.open_window(WindowOptions::default(), |_, cx| {
             cx.new(|cx| {
-                SourceDisplay::new_with_render(binding, cx, move |number, _, _| {
+                SourceView::new_with_render(binding, cx, move |number, _, _| {
                     value.set(Some(*number));
                     div().child(format!("Count: {number}"))
                 })
@@ -235,9 +297,9 @@ fn view_lifetime_owns_the_binding_but_does_not_extend_the_runtime() {
         let runtime = Shell::attach(cx, |_, _| Ok(())).unwrap();
         let first = runtime.mount(&descriptor, cx).unwrap();
         let retained = first.reactive();
-        let first = cx.new(|cx| SourceDisplay::new(first, cx));
+        let first = cx.new(|cx| SourceView::new(first, cx));
         let second = runtime.mount(&descriptor, cx).unwrap();
-        let second = cx.new(|cx| SourceDisplay::new(second, cx));
+        let second = cx.new(|cx| SourceView::new(second, cx));
         (runtime, first, second, retained)
     });
     assert_eq!(probe.starts.get(), 1);
@@ -252,7 +314,7 @@ fn view_lifetime_owns_the_binding_but_does_not_extend_the_runtime() {
     let (third, current) = cx.update(|cx| {
         let binding = runtime.mount(&descriptor, cx).unwrap();
         let current = binding.reactive();
-        (cx.new(|cx| SourceDisplay::new(binding, cx)), current)
+        (cx.new(|cx| SourceView::new(binding, cx)), current)
     });
     assert_eq!(probe.starts.get(), 2);
     assert!(matches!(current.get(&cx), SourceState::Loading));

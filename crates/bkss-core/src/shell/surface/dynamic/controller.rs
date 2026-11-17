@@ -1,7 +1,10 @@
 use crate::shell::{ShellError, runtime::RuntimeInner};
 use crate::{
-    AnimationPlan, AnimationSample, LayerSurfaceConfig, Phase,
-    surface::{DISPLAY_POLL_INTERVAL, DisplayReadiness, Readiness},
+    AnimationPlan, AnimationSample, DisplaySelection, LayerSurfaceConfig, Phase,
+    surface::{
+        DISPLAY_POLL_INTERVAL, DisplayReadiness, LayerSurfaceError, Readiness, StartupTargetError,
+        StartupTargets,
+    },
 };
 
 use super::super::animation::SurfaceAnimation;
@@ -26,10 +29,13 @@ pub(in crate::shell) struct Controller {
     config: LayerSurfaceConfig,
     timeout: Duration,
     animation_plan: Option<AnimationPlan>,
+    pub(super) deferred_animation: bool,
     factory: RefCell<Option<Factory>>,
     next_generation: Cell<u64>,
     pub(super) entries: RefCell<HashMap<DisplayId, Entry>>,
     pub(super) stopped: Cell<bool>,
+    startup_requested: Cell<bool>,
+    startup_task: RefCell<Option<Task<()>>>,
     window_closed: RefCell<Option<Subscription>>,
 }
 
@@ -88,6 +94,20 @@ impl DynamicSurfaceHandle {
         };
         controller.close(display, cx)
     }
+
+    /// Opens this surface on the selected startup displays once per controller.
+    /// Repeated calls after the first successful request are no-ops.
+    pub fn open_on_startup(
+        &self,
+        selection: DisplaySelection,
+        cx: &mut App,
+    ) -> Result<(), ShellError> {
+        let controller = self
+            .0
+            .upgrade()
+            .ok_or_else(|| ShellError::setup(SurfaceRequestError::Unavailable))?;
+        controller.open_on_startup(selection, cx)
+    }
 }
 
 impl SurfaceInstanceHandle {
@@ -110,9 +130,25 @@ impl SurfaceInstanceHandle {
             .and_then(|controller| controller.animation_sample(self.display_id, self.generation))
             .unwrap_or(AnimationSample {
                 opacity: None,
+                translation_x: None,
+                translation_y: None,
                 running: false,
                 completion: None,
             })
+    }
+
+    /// Initializes deferred animation after the first valid content layout.
+    #[doc(hidden)]
+    pub fn initialize_animation(
+        &self,
+        plan: AnimationPlan,
+        cx: &mut App,
+    ) -> Result<AnimationSample, ShellError> {
+        let controller = self
+            .controller
+            .upgrade()
+            .ok_or_else(|| ShellError::setup(SurfaceRequestError::Unavailable))?;
+        controller.initialize_animation(self.display_id, self.generation, plan, cx)
     }
 }
 
@@ -212,6 +248,132 @@ impl Controller {
         Ok(())
     }
 
+    fn open_on_startup(
+        self: &Rc<Self>,
+        selection: DisplaySelection,
+        cx: &mut App,
+    ) -> Result<(), ShellError> {
+        if self.stopped.get()
+            || self
+                .runtime
+                .upgrade()
+                .is_none_or(|runtime| runtime.stopped.get())
+        {
+            return Err(ShellError::setup(SurfaceRequestError::RuntimeClosed));
+        }
+        if self.startup_requested.get() {
+            return Ok(());
+        }
+        let snapshot = cx
+            .displays()
+            .iter()
+            .map(|display| (display.id(), display.bounds()))
+            .collect::<Vec<_>>();
+        let started = cx.background_executor().now();
+        let targets =
+            StartupTargets::new(selection.clone(), snapshot.clone(), started, self.timeout)
+                .map_err(ShellError::setup)?;
+        self.startup_requested.set(true);
+
+        match selection {
+            DisplaySelection::Explicit(displays) => {
+                let mut unique = Vec::new();
+                for display in displays {
+                    if !unique.contains(&display) {
+                        unique.push(display);
+                    }
+                }
+                for display in unique {
+                    self.open(display, cx).map_err(ShellError::setup)?;
+                }
+            }
+            DisplaySelection::AllConnected if !snapshot.is_empty() => {
+                for (display, _) in snapshot {
+                    self.open(display, cx).map_err(ShellError::setup)?;
+                }
+            }
+            DisplaySelection::AllConnected => {
+                let weak = Rc::downgrade(self);
+                let task = cx.spawn(async move |cx| {
+                    let mut targets = targets;
+                    loop {
+                        let Some(controller) = weak.upgrade() else {
+                            return;
+                        };
+                        let Some(runtime) = controller.runtime.upgrade() else {
+                            return;
+                        };
+                        if controller.stopped.get() || runtime.stopped.get() {
+                            return;
+                        }
+                        let snapshot = cx.update(|app| {
+                            app.displays()
+                                .iter()
+                                .map(|display| (display.id(), display.bounds()))
+                                .collect::<Vec<_>>()
+                        });
+                        let ready = match targets.poll(&snapshot, cx.background_executor().now()) {
+                            Ok(ready) => ready,
+                            Err(StartupTargetError::EnumerationTimeout { timeout }) => {
+                                cx.update(|app| {
+                                    crate::shell::runtime::record_setup_failure(
+                                        &runtime,
+                                        ShellError::setup(
+                                            LayerSurfaceError::DisplayEnumerationTimeout {
+                                                timeout,
+                                            },
+                                        ),
+                                    );
+                                    crate::shell::runtime::stop_runtime(&runtime, app);
+                                    crate::shell::runtime::request_host_quit(&runtime, app);
+                                });
+                                return;
+                            }
+                            Err(StartupTargetError::DisplayTimeout {
+                                display_id,
+                                timeout,
+                            }) => {
+                                cx.update(|app| {
+                                    crate::shell::runtime::record_surface_failure(
+                                        &runtime,
+                                        crate::SurfaceError::DisplayReadinessTimeout {
+                                            display_id,
+                                            timeout,
+                                        },
+                                        app,
+                                    );
+                                });
+                                return;
+                            }
+                        };
+                        for (display, _) in ready {
+                            let result = cx.update(|app| controller.open(display, app));
+                            if let Err(error) = result {
+                                cx.update(|app| {
+                                    crate::shell::runtime::record_setup_failure(
+                                        &runtime,
+                                        ShellError::setup(error),
+                                    );
+                                    crate::shell::runtime::stop_runtime(&runtime, app);
+                                    crate::shell::runtime::request_host_quit(&runtime, app);
+                                });
+                                return;
+                            }
+                        }
+                        if targets.finished() {
+                            return;
+                        }
+                        drop(runtime);
+                        drop(controller);
+                        cx.background_executor().timer(DISPLAY_POLL_INTERVAL).await;
+                    }
+                });
+                *self.startup_task.borrow_mut() = Some(task);
+            }
+        }
+        Ok(())
+    }
+
     fn pending(&self, display: DisplayId, generation: u64) -> bool {
         matches!(self.entries.borrow().get(&display), Some(Entry::Pending { generation: current, .. }) if *current == generation)
     }
@@ -274,8 +436,10 @@ impl Controller {
             ..
         }) = self.entries.borrow_mut().get_mut(&display)
             && *current == generation
+            && let Some(animation) = animation.take()
+            && slot.is_none()
         {
-            *slot = animation.take();
+            *slot = Some(animation);
         }
         let mut result: Option<Result<AnyView, ShellError>> = None;
         let mut root_entity: Option<Entity<DynamicRoot>> = None;
@@ -486,6 +650,7 @@ pub(in crate::shell) fn register<V: Render + 'static>(
     config: LayerSurfaceConfig,
     timeout: Duration,
     animation_plan: Option<AnimationPlan>,
+    deferred_animation: bool,
     mut factory: impl FnMut(
         SurfaceInstanceHandle,
         &mut Window,
@@ -526,7 +691,7 @@ pub(in crate::shell) fn register<V: Render + 'static>(
     }
     if config.options.exclusive_zone.is_some_and(|v| {
         let value = f32::from(v);
-        !value.is_finite() || value < 0. || f64::from(value) > f64::from(i32::MAX)
+        !value.is_finite() || (value < 0. && value != -1.) || f64::from(value) > f64::from(i32::MAX)
     }) {
         return Err(ShellError::setup(std::io::Error::other(
             "invalid dynamic layer surface exclusive zone",
@@ -558,10 +723,13 @@ pub(in crate::shell) fn register<V: Render + 'static>(
         config,
         timeout,
         animation_plan,
+        deferred_animation,
         factory: RefCell::new(Some(factory)),
         next_generation: Cell::new(0),
         entries: RefCell::new(HashMap::new()),
         stopped: Cell::new(false),
+        startup_requested: Cell::new(false),
+        startup_task: RefCell::new(None),
         window_closed: RefCell::new(None),
     });
     let weak = Rc::downgrade(&controller);
@@ -614,6 +782,9 @@ impl Controller {
 
     fn cleanup(&self, app: &gpui::AsyncApp) {
         self.stopped.set(true);
+        if let Some(task) = self.startup_task.borrow_mut().take() {
+            defer_task_drop(app, task);
+        }
         let subscription = self.window_closed.borrow_mut().take();
         drop(subscription);
         let entries = std::mem::take(&mut *self.entries.borrow_mut());
@@ -711,6 +882,7 @@ mod tests {
                     timing,
                 }),
             }),
+            ..AnimationPlan::default()
         }
     }
 

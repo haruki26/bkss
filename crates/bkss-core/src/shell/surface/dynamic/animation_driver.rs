@@ -1,12 +1,103 @@
 use super::controller::{Controller, Entry};
 use crate::shell::{ShellError, runtime as shell_runtime};
-use crate::{AnimationSample, Phase};
+use crate::{AnimationPlan, AnimationSample, Phase};
 use gpui::{App, AppContext, DisplayId, Window};
 use std::rc::Rc;
 
 use super::super::animation::SurfaceAnimation;
 
 impl Controller {
+    pub(super) fn initialize_animation(
+        self: &Rc<Self>,
+        display: DisplayId,
+        generation: u64,
+        plan: AnimationPlan,
+        cx: &mut App,
+    ) -> Result<AnimationSample, ShellError> {
+        let (is_current, existing) =
+            self.entries
+                .borrow()
+                .get(&display)
+                .map_or((false, None), |entry| match entry {
+                    Entry::Pending {
+                        generation: current,
+                        animation,
+                        ..
+                    }
+                    | Entry::Mounted {
+                        generation: current,
+                        animation,
+                        ..
+                    } if *current == generation => {
+                        (true, animation.as_ref().map(SurfaceAnimation::value))
+                    }
+                    _ => (false, None),
+                });
+        if !is_current {
+            return Err(ShellError::setup(
+                super::controller::SurfaceRequestError::Unavailable,
+            ));
+        }
+        if let Some(sample) = existing {
+            return Ok(sample);
+        }
+        if !self.deferred_animation {
+            return Err(ShellError::setup(
+                super::controller::SurfaceRequestError::Unavailable,
+            ));
+        }
+
+        let now = cx.background_executor().now();
+        let animation = match SurfaceAnimation::new(plan, now) {
+            Ok(animation) => animation,
+            Err(error) => {
+                self.fail_animation(error, cx);
+                return Err(ShellError::setup(error));
+            }
+        };
+        let sample = animation.value();
+        let mounted = {
+            let mut entries = self.entries.borrow_mut();
+            match entries.get_mut(&display) {
+                Some(Entry::Pending {
+                    generation: current,
+                    animation: slot,
+                    ..
+                }) if *current == generation && slot.is_none() => {
+                    *slot = Some(animation);
+                    false
+                }
+                Some(Entry::Mounted {
+                    generation: current,
+                    animation: slot,
+                    ..
+                }) if *current == generation && slot.is_none() => {
+                    *slot = Some(animation);
+                    true
+                }
+                Some(Entry::Pending {
+                    generation: current,
+                    animation: Some(animation),
+                    ..
+                })
+                | Some(Entry::Mounted {
+                    generation: current,
+                    animation: Some(animation),
+                    ..
+                }) if *current == generation => return Ok(animation.value()),
+                _ => {
+                    return Err(ShellError::setup(
+                        super::controller::SurfaceRequestError::Unavailable,
+                    ));
+                }
+            }
+        };
+        if mounted {
+            self.queue_frame(display, generation, cx);
+        }
+        Ok(sample)
+    }
+
     pub(super) fn animation_sample(
         &self,
         display: DisplayId,

@@ -4,6 +4,7 @@ use std::{error::Error, fmt};
 pub enum AnimationError {
     InvalidTiming,
     InvalidEndpoint,
+    InvalidDistance,
 }
 
 impl fmt::Display for AnimationError {
@@ -11,6 +12,7 @@ impl fmt::Display for AnimationError {
         match self {
             Self::InvalidTiming => f.write_str("invalid animation timing"),
             Self::InvalidEndpoint => f.write_str("invalid animation endpoint"),
+            Self::InvalidDistance => f.write_str("invalid animation distance"),
         }
     }
 }

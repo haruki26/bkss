@@ -82,6 +82,7 @@ mod tests {
                     timing,
                 }),
             }),
+            ..AnimationPlan::default()
         }
     }
 

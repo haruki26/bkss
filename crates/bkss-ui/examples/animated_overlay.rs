@@ -1,4 +1,5 @@
 //! `mise x -- cargo run -p bkss-ui --example animated_overlay -- --seconds 180`
+//! `mise x -- cargo run -p bkss-ui --example animated_overlay -- --help` prints help without launching.
 use std::{
     cell::{Cell, RefCell},
     io,
@@ -11,10 +12,8 @@ use bkss_core::{
     GlassBorder, GlassColor, GlassInnerEffect, GlassStyle, MountedBinding, Shell, ShellError,
     Source, SourceDescriptor, SourcePublisher, WeakRuntimeHandle,
 };
-use bkss_ui::{
-    Animation, EasingCurve, KeyboardFocus, OverlayDefinition, OverlayGeometry, OverlayHandle,
-    OverlayRuntimeHandleExt, PointerDismiss, Timing,
-};
+use bkss_ui::effects::{GlassState, MountedGlass};
+use bkss_ui::{KeyboardInteractivity, Overlay, SpringPreset, SurfaceHandle, Transition};
 use gpui::{
     App, AppContext, Bounds, Context, DisplayId, Render, Task, Window, WindowBounds, WindowOptions,
     div, prelude::*, px, rgb, size,
@@ -23,10 +22,14 @@ use gpui::{
 const USAGE: &str = "animated_overlay [--seconds 1..300]
 Default: 180-second watchdog. No overlay opens until you click Open.
 Choose a connected display and open Default, Slow, or Spring.
-Slow uses a 1200ms linear fade; Default uses the unchanged 160ms ease-out.
-Close + reopen issues a new open halfway through the configured easing fade
-(80ms for Spring). Stop and Fail source end the shell without waiting for exit.
-Escape dismisses only an Interactive recipient when actually delivered.
+Default uses the unchanged 160ms ease-out fade. Slow combines fade + upward slide
+over 1200ms with ease-out; Spring combines fade + upward slide with a Snappy spring.
+Slow and Spring move content within a fixed viewport; click or scroll at its moving
+position, not its old position. Default and Slow have a fixed dim backdrop;
+Spring has no backdrop. Close + reopen sends Open after 600ms for Slow, 80ms otherwise,
+so you can watch an unfinished exit reverse without remounting the card.
+Stop and Fail source end the shell without waiting for exit.
+Escape dismisses the receiving overlay only when actually delivered.
 Backdrop is not animated. No scale, activation, focus restoration, or ordering guarantee.
 Run alone on the compositor; this program does not change compositor settings.";
 
@@ -83,20 +86,26 @@ impl Source for Sample {
 }
 
 const NAMES: [&str; 3] = ["Default", "Slow", "Spring"];
-fn timing(index: usize) -> Timing {
+const MOTIONS: [&str; 3] = [
+    "fade, 160ms ease-out",
+    "fade + slide up, 1200ms ease-out",
+    "fade + slide up, Snappy spring",
+];
+fn transition(index: usize) -> Transition {
     match index {
-        0 => Timing::default(),
-        1 => Timing::Easing {
-            duration_ms: 1200,
-            curve: EasingCurve::Linear,
-        },
-        _ => Timing::spring_default(),
+        0 => Transition::fade().duration(Duration::from_millis(160)),
+        1 => Transition::fade()
+            .and(Transition::slide_up())
+            .duration(Duration::from_millis(1200)),
+        _ => Transition::fade()
+            .and(Transition::slide_up())
+            .spring(SpringPreset::Snappy),
     }
 }
 
 struct Session {
     runtime: WeakRuntimeHandle,
-    handles: RefCell<Vec<OverlayHandle>>,
+    handles: RefCell<Vec<SurfaceHandle>>,
     counts: Rc<Counts>,
     publisher: Rc<RefCell<Option<SourcePublisher<Sample>>>>,
     script: RefCell<Option<Task<()>>>,
@@ -107,13 +116,13 @@ impl Session {
         let handle = self.handles.borrow().get(index).cloned();
         if let Some(handle) = handle {
             println!(
-                "REQUEST profile={} display={display:?} open={open}",
-                NAMES[index]
+                "REQUEST profile={} motion={} display={display:?} open={open}",
+                NAMES[index], MOTIONS[index]
             );
             let result = if open {
-                handle.open(display, cx)
+                handle.show(display, cx)
             } else {
-                handle.close(display, cx)
+                handle.hide(display, cx)
             };
             if let Err(error) = result {
                 eprintln!("REQUEST_ERROR {error}");
@@ -124,6 +133,10 @@ impl Session {
     fn reopen(self: &Rc<Self>, index: usize, display: DisplayId, cx: &mut App) {
         self.request(index, display, false, cx);
         let delay = if index == 1 { 600 } else { 80 };
+        println!(
+            "REOPEN profile={} display={display:?} delay_ms={delay} keeps_content_if_exit_unfinished=true",
+            NAMES[index]
+        );
         let weak = Rc::downgrade(self);
         // This timer scripts a user request, not animation sampling or frames.
         let task = cx.spawn(async move |cx| {
@@ -239,7 +252,7 @@ impl Render for Controls {
                         .flex()
                         .flex_col()
                         .gap_2()
-                        .child(*name)
+                        .child(format!("{name} — {}", MOTIONS[index]))
                         .child(controls(&self.0, index, display.id())),
                 );
             }
@@ -255,8 +268,8 @@ impl Render for Controls {
         }
         div().id("animation-controls").size_full().overflow_y_scroll().p_6().bg(rgb(0xc7bfd3))
             .text_color(rgb(0x292638)).font_family("DejaVu Sans").flex().flex_col().gap_4()
-            .child(div().font_family("DejaVu Serif").text_size(px(30.)).child("Watch the whole card fade"))
-            .child("Open an overlay to begin. Slow makes enter, exit, and midway reopen easier to inspect. The dim backdrop stays unchanged.")
+            .child(div().font_family("DejaVu Serif").text_size(px(30.)).child("Watch the whole card fade and slide"))
+            .child("Open an overlay to begin. Default fades only. Slow and Spring also slide: click and scroll at the card's moving position. The dim backdrop stays fixed; Spring has none.")
             .child(displays)
             .child(div().font_family("DejaVu Sans Mono").text_size(px(12.)).child(self.0.counts()))
             .child(button("refresh", "Refresh displays / counts", |cx| cx.refresh_windows()))
@@ -270,6 +283,7 @@ struct Card {
     index: usize,
     serial: u64,
     _binding: MountedBinding<()>,
+    glass: MountedGlass,
 }
 impl Drop for Card {
     fn drop(&mut self) {
@@ -287,7 +301,7 @@ impl Drop for Card {
     }
 }
 impl Render for Card {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let fail = self.session.clone();
         let mut swatches = div().flex().gap_2();
         for (index, color) in [0xc0d8cf, 0xe5bd79, 0xb5a3d4, 0x8cafd0]
@@ -303,20 +317,27 @@ impl Render for Card {
                     .bg(rgb(color)),
             );
         }
-        div().w(px(510.)).max_w_full().p_5().font_family("DejaVu Sans").text_color(rgb(0xf3eef7))
+        self.glass.element(GlassState::default(), cx)
+            .w(px(510.)).max_w_full().p_5().font_family("DejaVu Sans").text_color(rgb(0xf3eef7))
             .flex().flex_col().gap_3()
             .child(div().flex().justify_between()
                 .child(format!("{} / {:?}", NAMES[self.index], self.display))
                 .child(div().text_color(rgb(0xe5bd79)).child("◒  ☁  ✨")))
-            .child(div().font_family("DejaVu Serif").text_size(px(31.)).child("One card. One fade."))
+            .child(div().font_family("DejaVu Serif").text_size(px(31.)).child(
+                if self.index == 0 { "One card. One fade." } else { "One card. Fade and slide." }
+            ))
             .child(swatches)
-            .child("Text, colored shapes, Glass edges, and inset shadows should fade together. Size and pointer regions stay unchanged.")
+            .child(if self.index == 0 {
+                "Text, colored shapes, Glass edges, and inset shadows should fade together. Size and pointer regions stay unchanged."
+            } else {
+                "Text, colored shapes, Glass edges, and inset shadows fade and slide together. Click and scroll at the moving card, not its old position."
+            })
             .child(controls(&self.session, self.index, self.display))
             .child(div().font_family("DejaVu Sans Mono").text_size(px(12.)).child(format!("Content #{} · stays mounted during exit and reopen", self.serial)))
             .child(div().id("card-scroll").h(px(108.)).overflow_y_scroll().bg(rgb(0x363044)).rounded_md().px_3()
                 .children((1..=12).map(|row| div().h(px(27.)).flex_shrink_0().child(format!("Scroll sample {row:02}  —  text stays readable")))))
             .child(button("fail", "Fail source and stop", move |cx| { let session = fail.clone(); cx.defer(move |cx| session.fail(cx)); }))
-            .child("Close + reopen keeps the same content number. After a completed close, Open creates a new number. Console counters record resource lifetime.")
+            .child("Reopen before exit completes to keep the same content number. After a completed close, Open creates a new number. Console counters record resource lifetime.")
     }
 }
 
@@ -355,42 +376,37 @@ fn run(seconds: u64) -> Result<(), ShellError> {
                 .map_err(ShellError::setup)?,
             ));
         for (index, name) in NAMES.into_iter().enumerate() {
-            let definition = OverlayDefinition::new(KeyboardFocus::Interactive)
-                .with_pointer_dismiss(if index == 2 {
-                    PointerDismiss::Disabled
-                } else {
-                    PointerDismiss::Backdrop
-                })
-                .with_style(style.clone())
-                .with_geometry(OverlayGeometry {
-                    max_logical_size: Some([550., 650.]),
-                    ..Default::default()
-                })
-                .map_err(ShellError::setup)?
-                .with_animation(Animation::transition(timing(index)).opacity(0., 1.))
-                .map_err(ShellError::setup)?;
+            let mut overlay = Overlay::new()
+                .keyboard_interactivity(KeyboardInteractivity::OnDemand)
+                .content_limit(size(px(550.), px(650.)))
+                .transition(transition(index));
+            if index != 2 {
+                overlay = overlay.dismiss_on_backdrop();
+            }
             let captured = session.clone();
             let source = source.clone();
-            let weak = runtime.downgrade();
-            let handle = runtime.mount_overlay(
-                definition,
-                move |display, _, cx| {
+            let content_style = style.clone();
+            let handle = overlay.mount(
+                &runtime,
+                move |instance, weak, _, cx| {
                     let runtime = weak
                         .upgrade()
                         .ok_or_else(|| ShellError::setup(io::Error::other("runtime stopped")))?;
                     let binding = runtime.mount(&source, cx)?;
+                    let display = instance.display_id();
                     let serial = captured.counts.mounts.get() + 1;
                     captured.counts.mounts.set(serial);
                     println!(
-                        "CONTENT_MOUNT profile={} display={display:?} serial={serial}",
-                        name
+                        "CONTENT_MOUNT profile={} motion={} display={display:?} serial={serial}",
+                        name, MOTIONS[index]
                     );
-                    Ok(cx.new(|_| Card {
+                    Ok(cx.new(|cx| Card {
                         session: captured.clone(),
                         display,
                         index,
                         serial,
                         _binding: binding,
+                        glass: MountedGlass::new(content_style.clone(), cx),
                     }))
                 },
                 cx,
@@ -460,6 +476,67 @@ mod tests {
             vec!["--other", "1"],
         ] {
             assert!(parse(&args).is_err());
+        }
+    }
+
+    #[test]
+    fn default_stays_fade_only_while_slow_and_spring_move_the_measured_card() {
+        struct SizedContent;
+        impl Render for SizedContent {
+            fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+                div().w(px(100.)).h(px(80.))
+            }
+        }
+        for index in 0..NAMES.len() {
+            let cx = gpui::TestAppContext::single();
+            let instance = Rc::new(RefCell::new(None));
+            let captured = instance.clone();
+            let runtime = cx.update(|cx| {
+                let runtime = Shell::attach(cx, |_, _| Ok(())).unwrap();
+                let handle = Overlay::new()
+                    .transition(transition(index))
+                    .mount(
+                        &runtime,
+                        move |instance, _, _, cx| {
+                            *captured.borrow_mut() = Some(instance);
+                            Ok(cx.new(|_| SizedContent))
+                        },
+                        cx,
+                    )
+                    .unwrap();
+                handle.show(cx.displays()[0].id(), cx).unwrap();
+                runtime
+            });
+            cx.run_until_parked();
+            let window = cx.update(|cx| cx.windows()[0]);
+            cx.simulate_window_resize(window, size(px(400.), px(300.)));
+            cx.run_until_parked();
+            let initial = instance.borrow().as_ref().unwrap().animation_sample();
+            assert_eq!(initial.opacity, Some(0.));
+            assert_eq!(initial.translation_x, None);
+            assert_eq!(
+                initial.translation_y,
+                if index == 0 { None } else { Some(80.) }
+            );
+            let elapsed = match index {
+                0 => 160,
+                1 => 600,
+                _ => 80,
+            };
+            cx.executor().advance_clock(Duration::from_millis(elapsed));
+            let mut visual = gpui::VisualTestContext::from_window(window, &cx);
+            visual.update(|window, cx| window.simulate_next_frame(cx));
+            cx.run_until_parked();
+            let sample = instance.borrow().as_ref().unwrap().animation_sample();
+            if index == 0 {
+                assert_eq!(sample.opacity, Some(1.));
+                assert!(!sample.running);
+            } else {
+                assert!(sample.opacity.unwrap() > 0. && sample.opacity.unwrap() < 1.);
+                assert!(sample.translation_y.unwrap() > 0. && sample.translation_y.unwrap() < 80.);
+                assert!(sample.running);
+            }
+            cx.update(|cx| runtime.shutdown(cx));
         }
     }
 }

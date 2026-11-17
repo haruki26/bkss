@@ -1,7 +1,6 @@
 mod definition;
 mod error;
-mod timing;
 
-pub use definition::Animation;
+pub(crate) use definition::SurfaceTransitions;
+pub use definition::{SpringPreset, Transition};
 pub use error::AnimationError;
-pub use timing::{EasingCurve, Timing};

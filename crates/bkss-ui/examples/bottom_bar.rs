@@ -7,14 +7,91 @@
 use std::{io, process::ExitCode, time::Duration};
 
 use bkss_core::{GlassColor, GlassStyle, Shell, ShellError};
-use bkss_ui::{
-    BottomBar, BottomBarAlignment, BottomBarGeometry, BottomBarWidth, DisplaySelection,
-    RuntimeHandleExt,
-};
+use bkss_ui::effects::{GlassState, MountedGlass};
+use bkss_ui::{Bar, BarAlignment, DisplaySelection, Thickness};
 use gpui::{
-    AppContext, Bounds, Context, DisplayId, MouseButton, Render, Window, WindowBounds,
+    AppContext, Bounds, Context, DisplayId, Edges, MouseButton, Render, Window, WindowBounds,
     WindowOptions, canvas, div, prelude::*, px, rgb, size,
 };
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BottomBarAlignment {
+    Left,
+    Center,
+    Right,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum BottomBarWidth {
+    FullDisplayWidth,
+    FloatingContentWidth {
+        max_logical_width: Option<f32>,
+        horizontal_alignment: BottomBarAlignment,
+    },
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BottomBarMargins {
+    left: f32,
+    right: f32,
+    bottom: f32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct BottomBarGeometry {
+    width: BottomBarWidth,
+    logical_height: f32,
+    horizontal_padding: f32,
+    margins: BottomBarMargins,
+    reserve: bool,
+}
+
+impl Default for BottomBarGeometry {
+    fn default() -> Self {
+        Self {
+            width: BottomBarWidth::FloatingContentWidth {
+                max_logical_width: None,
+                horizontal_alignment: BottomBarAlignment::Center,
+            },
+            logical_height: 40.,
+            horizontal_padding: 12.,
+            margins: BottomBarMargins {
+                left: 12.,
+                right: 12.,
+                bottom: 12.,
+            },
+            reserve: true,
+        }
+    }
+}
+
+impl BottomBarGeometry {
+    fn validate(&self) -> Result<(), io::Error> {
+        let check = |value: f32, minimum: f32| {
+            value.is_finite() && value >= minimum && f64::from(value) <= f64::from(i32::MAX)
+        };
+        if !check(self.logical_height, 1.)
+            || !check(self.horizontal_padding, 0.)
+            || !check(self.margins.left, 0.)
+            || !check(self.margins.right, 0.)
+            || !check(self.margins.bottom, 0.)
+            || !check(self.logical_height + self.margins.bottom, 1.)
+            || !check(self.margins.left + self.margins.right, 0.)
+            || !check(self.horizontal_padding * 2., 0.)
+        {
+            return Err(io::Error::other("invalid bar logical-pixel geometry"));
+        }
+        if let BottomBarWidth::FloatingContentWidth {
+            max_logical_width: Some(width),
+            ..
+        } = self.width
+            && !check(width, 1.)
+        {
+            return Err(io::Error::other("invalid maximum bar length"));
+        }
+        Ok(())
+    }
+}
 
 const USAGE: &str = "bottom_bar [--display ID ... | --all] [--full] [--no-reserve]
     [--align left|center|right] [--max-width N] [--left N] [--right N] [--bottom N]
@@ -137,6 +214,7 @@ struct Controls {
     display: DisplayId,
     clicks: u64,
     logged_layout: bool,
+    glass: MountedGlass,
 }
 
 impl Render for Controls {
@@ -144,7 +222,8 @@ impl Render for Controls {
         let log_layout = !self.logged_layout;
         self.logged_layout = true;
         let display = self.display;
-        div().relative().flex().items_center().gap_4().text_color(rgb(0xf1f5f9))
+        self.glass.element(GlassState::default(), cx)
+            .relative().flex().items_center().gap_4().text_color(rgb(0xf1f5f9))
             .font_family("sans-serif").text_size(px(14.)).whitespace_nowrap()
             .child(format!("Display {display:?}"))
             .child(div().id("pointer-check").role(gpui::Role::Button).aria_label("Count pointer clicks")
@@ -182,7 +261,7 @@ impl Render for Probe {
     }
 }
 
-fn run(args: Args, bar: BottomBar) -> Result<(), ShellError> {
+fn run(args: Args, style: GlassStyle) -> Result<(), ShellError> {
     Shell::run(move |runtime, cx| {
         if args.probe {
             let display = match &args.displays {
@@ -208,15 +287,49 @@ fn run(args: Args, bar: BottomBar) -> Result<(), ShellError> {
             )
             .map_err(|error| ShellError::setup(io::Error::other(error)))?;
         }
-        runtime.mount_bottom_bar(
-            bar,
-            |display, _, cx| {
+        let geometry = args.geometry;
+        let mut bar =
+            Bar::new(Thickness::new(px(geometry.logical_height)).map_err(ShellError::setup)?)
+                .margins(Edges {
+                    top: px(0.),
+                    right: px(geometry.margins.right),
+                    bottom: px(geometry.margins.bottom),
+                    left: px(geometry.margins.left),
+                })
+                .outputs(args.displays.clone());
+        if !geometry.reserve {
+            bar = bar.exclusive_zone(px(0.));
+        }
+        bar = match geometry.width {
+            BottomBarWidth::FullDisplayWidth => bar.full_length(),
+            BottomBarWidth::FloatingContentWidth {
+                max_logical_width,
+                horizontal_alignment,
+            } => {
+                let bar = bar.alignment(match horizontal_alignment {
+                    BottomBarAlignment::Left => BarAlignment::Start,
+                    BottomBarAlignment::Center => BarAlignment::Center,
+                    BottomBarAlignment::Right => BarAlignment::End,
+                });
+                if let Some(maximum) = max_logical_width {
+                    bar.max_length(px(maximum))
+                } else {
+                    bar
+                }
+            }
+        };
+        bar = bar.px(px(geometry.horizontal_padding));
+        bar.mount(
+            &runtime,
+            move |instance, _, _, cx| {
+                let display = instance.display_id();
                 println!("BAR_CREATED display={display:?}");
-                cx.new(|_| Controls {
+                Ok(cx.new(|cx| Controls {
                     display,
                     clicks: 0,
                     logged_layout: false,
-                })
+                    glass: MountedGlass::new(style.clone(), cx),
+                }))
             },
             cx,
         )?;
@@ -224,11 +337,9 @@ fn run(args: Args, bar: BottomBar) -> Result<(), ShellError> {
             println!(
                 "WAITING_FOR_DISPLAY {display:?}; an absent ID must fail the whole runtime after 5 seconds"
             );
-            runtime.mount_bottom_bar(
-                BottomBar::default().with_displays(DisplaySelection::Explicit(vec![display])),
-                |_, _, cx| cx.new(|_| gpui::EmptyView),
-                cx,
-            )?;
+            Bar::new(Thickness::new(px(geometry.logical_height)).map_err(ShellError::setup)?)
+                .outputs(DisplaySelection::Explicit(vec![display]))
+                .mount(&runtime, |_, _, _, cx| Ok(cx.new(|_| gpui::EmptyView)), cx)?;
         }
         let shutdown = runtime.clone();
         cx.spawn(async move |cx| {
@@ -253,14 +364,11 @@ fn main() -> ExitCode {
     let result = (|| {
         let args = parse_args(std::env::args().skip(1))?;
         let style = GlassStyle::default().with_tint(GlassColor::rgba(0.06, 0.12, 0.16, 0.15)?);
-        let bar = BottomBar::new(args.geometry)?
-            .with_style(style)
-            .with_displays(args.displays.clone());
         println!(
             "BOTTOM_BAR geometry={:?} displays={:?} seconds={}; no compositor configuration changes",
             args.geometry, args.displays, args.seconds
         );
-        run(args, bar)?;
+        run(args, style)?;
         println!("BOTTOM_BAR_STOPPED");
         Ok::<_, Box<dyn std::error::Error>>(())
     })();

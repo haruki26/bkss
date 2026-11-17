@@ -11,9 +11,9 @@ use bkss_core::{
     GlassBorder, GlassColor, GlassStyle, MountedBinding, ReactiveSubscription, Shell, ShellError,
     Source, SourceDescriptor, SourcePublisher, WeakRuntimeHandle,
 };
+use bkss_ui::effects::{GlassState, MountedGlass};
 use bkss_ui::{
-    BottomBar, DisplaySelection, KeyboardFocus, OverlayDefinition, OverlayGeometry, OverlayHandle,
-    OverlayRuntimeHandleExt, PointerDismiss, RuntimeHandleExt,
+    Bar as ShellBar, DisplaySelection, KeyboardInteractivity, Overlay, SurfaceHandle, Thickness,
 };
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Context, DisplayId, Render, Subscription, Task,
@@ -99,7 +99,7 @@ struct Session {
     targets: RefCell<Vec<DisplayId>>,
     bars_requested: Cell<bool>,
     bar_ready: RefCell<Vec<(DisplayId, Instant)>>,
-    overlays: RefCell<Vec<OverlayHandle>>,
+    overlays: RefCell<Vec<SurfaceHandle>>,
     publisher: Rc<RefCell<Option<SourcePublisher<SampleSource>>>>,
     value: Cell<u64>,
     control: Cell<Option<AnyWindowHandle>>,
@@ -127,19 +127,25 @@ impl Session {
         };
         *self.targets.borrow_mut() = targets.clone();
         let weak = Rc::downgrade(self);
-        let result = runtime.mount_bottom_bar(
-            BottomBar::default().with_displays(DisplaySelection::Explicit(targets)),
-            move |display, _, cx| {
-                let weak = weak.clone();
-                cx.new(|_| Bar {
-                    display,
-                    session: weak,
-                })
-            },
-            cx,
-        );
+        let result = match Thickness::new(px(40.)) {
+            Ok(thickness) => ShellBar::new(thickness)
+                .margins(gpui::Edges::all(px(12.)))
+                .outputs(DisplaySelection::Explicit(targets))
+                .mount(
+                    &runtime,
+                    move |instance, _, _, cx| {
+                        Ok(cx.new(|cx| Bar {
+                            glass: MountedGlass::new(GlassStyle::default(), cx),
+                            display: instance.display_id(),
+                            session: weak.clone(),
+                        }))
+                    },
+                    cx,
+                ),
+            Err(error) => Err(ShellError::setup(error)),
+        };
         match result {
-            Ok(()) => self.bars_requested.set(true),
+            Ok(_) => self.bars_requested.set(true),
             Err(error) => {
                 *self.failure.borrow_mut() = Some(error);
                 let runtime = runtime.downgrade();
@@ -165,7 +171,7 @@ impl Session {
         }
         let handle = self.overlays.borrow().get(index).cloned();
         if let Some(handle) = handle
-            && let Err(error) = handle.open(display, cx)
+            && let Err(error) = handle.show(display, cx)
         {
             eprintln!("OPEN_ERROR {error}");
         }
@@ -174,7 +180,7 @@ impl Session {
     fn close(&self, index: usize, display: DisplayId, cx: &mut App) {
         let handle = self.overlays.borrow().get(index).cloned();
         if let Some(handle) = handle
-            && let Err(error) = handle.close(display, cx)
+            && let Err(error) = handle.hide(display, cx)
         {
             eprintln!("CLOSE_ERROR {error}");
         }
@@ -252,12 +258,14 @@ impl Render for Controls {
 struct Bar {
     display: DisplayId,
     session: std::rc::Weak<Session>,
+    glass: MountedGlass,
 }
 impl Render for Bar {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let display = self.display;
         let session = self.session.clone();
-        div().relative().text_color(rgb(0xeaf0ed)).px_3().child(format!("Independent reserving Top BottomBar · {display:?}"))
+        self.glass.element(GlassState::default(), cx)
+            .relative().text_color(rgb(0xeaf0ed)).px_3().child(format!("Independent reserving Top BottomBar · {display:?}"))
             .child(canvas(move |_, window, cx| {
                 if window.viewport_size().height > px(0.) && let Some(session) = session.upgrade() {
                     let mut ready = session.bar_ready.borrow_mut();
@@ -280,6 +288,7 @@ struct Content {
     _subscription: ReactiveSubscription,
     clicks: u64,
     focus: gpui::FocusHandle,
+    glass: MountedGlass,
 }
 impl Render for Content {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -315,7 +324,16 @@ impl Render for Content {
                 publisher.publish(value, cx);
             }
         });
-        div().w(px(500.)).p_5().flex().flex_col().gap_3().text_color(rgb(0xeaf0ed)).font_family("sans-serif")
+        let content = self.glass.element(GlassState::default(), cx)
+            .w(px(500.)).p_5().flex().flex_col().gap_3().text_color(rgb(0xeaf0ed)).font_family("sans-serif")
+            .child(format!("OVERLAY {name} / {display:?}"))
+            .child(div().flex().flex_wrap().gap_2().child(open).child(close_peer).child(close).child(stop_button(self.session.clone())))
+            .child(div().font_family("serif").text_size(px(28.)).child("Independent view, shared resource"))
+            .child(format!("Sample {:?} · local clicks {}", self.binding.reactive().get(cx), self.clicks))
+            .child(publish)
+            .child(div().id("explicit-scroll").h(px(120.)).overflow_y_scroll().children((1..=20).map(|row| div().h(px(28.)).flex_shrink_0().child(format!("Explicit scroll row {row:02}")))))
+            .child("A: Interactive, outside-close. B: None, pointer controls still work. Escape only closes an interactive recipient when delivered and not consumed by a child.");
+        div()
             .track_focus(&self.focus)
             .on_key_down(move |event, window, _| {
                 let key = if event.keystroke.key == "escape" { "Escape" } else { "other-redacted" };
@@ -326,13 +344,7 @@ impl Render for Content {
                 println!("CONTENT_POINTER index={} display={:?} count={} local={:?} active_observation={}", this.index, this.display, this.clicks, event.position, window.is_window_active());
                 cx.notify();
             }))
-            .child(format!("OVERLAY {name} / {display:?}"))
-            .child(div().flex().flex_wrap().gap_2().child(open).child(close_peer).child(close).child(stop_button(self.session.clone())))
-            .child(div().font_family("serif").text_size(px(28.)).child("Independent view, shared resource"))
-            .child(format!("Sample {:?} · local clicks {}", self.binding.reactive().get(cx), self.clicks))
-            .child(publish)
-            .child(div().id("explicit-scroll").h(px(120.)).overflow_y_scroll().children((1..=20).map(|row| div().h(px(28.)).flex_shrink_0().child(format!("Explicit scroll row {row:02}")))))
-            .child("A: Interactive, outside-close. B: None, pointer controls still work. Escape only closes an interactive recipient when delivered and not consumed by a child.")
+            .child(content)
     }
 }
 
@@ -368,33 +380,31 @@ fn run(args: Args) -> Result<(), ShellError> {
                 .map_err(ShellError::setup)?,
             ));
         for index in 0..2 {
-            let weak_runtime = runtime.downgrade();
             let descriptor = descriptor.clone();
             let session_for_content = session.clone();
-            let definition = OverlayDefinition::new(if index == 0 {
-                KeyboardFocus::Interactive
+            let content_style = style.clone();
+            let overlay = Overlay::new()
+                .keyboard_interactivity(if index == 0 {
+                    KeyboardInteractivity::OnDemand
+                } else {
+                    KeyboardInteractivity::None
+                })
+                .content_limit(size(px(560.), px(600.)));
+            let overlay = if index == 0 {
+                overlay.dismiss_on_backdrop()
             } else {
-                KeyboardFocus::None
-            })
-            .with_style(style.clone())
-            .with_pointer_dismiss(if index == 0 {
-                PointerDismiss::Backdrop
-            } else {
-                PointerDismiss::Disabled
-            })
-            .with_geometry(OverlayGeometry {
-                max_logical_size: Some([560., 600.]),
-                ..Default::default()
-            })
-            .map_err(ShellError::setup)?;
-            let handle = runtime.mount_overlay(
-                definition,
-                move |display, window, cx| {
-                    let runtime = weak_runtime.upgrade().ok_or_else(|| {
+                overlay
+            };
+            let overlay = overlay.outputs(DisplaySelection::AllConnected);
+            let handle = overlay.mount(
+                &runtime,
+                move |instance, weak, window, cx| {
+                    let runtime = weak.upgrade().ok_or_else(|| {
                         ShellError::setup(io::Error::other("runtime already stopped"))
                     })?;
                     let binding = runtime.mount(&descriptor, cx)?;
                     let session = session_for_content.clone();
+                    let display = instance.display_id();
                     println!(
                         "OVERLAY_CREATED index={index} display={display:?}; new content lease"
                     );
@@ -412,6 +422,7 @@ fn run(args: Args) -> Result<(), ShellError> {
                             _subscription: subscription,
                             clicks: 0,
                             focus,
+                            glass: MountedGlass::new(content_style.clone(), cx),
                         }
                     }))
                 },

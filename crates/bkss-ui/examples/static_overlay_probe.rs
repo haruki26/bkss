@@ -10,8 +10,8 @@ use std::{
     time::Duration,
 };
 
-use bkss_core::{RuntimeHandle, Shell};
-use bkss_ui::{BottomBar, BottomBarGeometry, BottomBarWidth, DisplaySelection, RuntimeHandleExt};
+use bkss_core::{GlassState, GlassStyle, RuntimeHandle, Shell};
+use bkss_ui::{Bar as ShellBar, SurfaceHandle, Thickness};
 use gpui::{
     AnyWindowHandle, App, AppContext, Bounds, Context, DisplayId, FocusHandle, Pixels, Render,
     Size, Subscription, Task, Window, WindowBackgroundAppearance, WindowBounds, WindowKind,
@@ -223,25 +223,10 @@ fn native_regions(
     regions
 }
 
-fn reference_geometry() -> BottomBarGeometry {
-    BottomBarGeometry {
-        width: BottomBarWidth::FullDisplayWidth,
-        horizontal_padding: 0.,
-        ..Default::default()
-    }
-}
-
 fn bar_box(viewport: Size<Pixels>) -> Bounds<Pixels> {
-    let g = reference_geometry();
     Bounds::new(
-        point(
-            px(g.margins.left),
-            viewport.height - px(g.margins.bottom + g.logical_height),
-        ),
-        size(
-            (viewport.width - px(g.margins.left + g.margins.right)).max(px(0.)),
-            px(g.logical_height),
-        ),
+        point(px(12.), viewport.height - px(52.)),
+        size((viewport.width - px(24.)).max(px(0.)), px(40.)),
     )
 }
 
@@ -291,6 +276,7 @@ impl Error for ProbeError {
 struct Owner {
     args: Args,
     runtime: RuntimeHandle,
+    reference_bar: RefCell<Option<SurfaceHandle>>,
     stopped: Cell<bool>,
     display: Cell<Option<DisplayId>>,
     root: Cell<Option<AnyWindowHandle>>,
@@ -423,32 +409,37 @@ impl Owner {
         let Some(display) = self.display.get() else {
             return;
         };
-        let bar = BottomBar::new(reference_geometry())
-            .map(|bar| bar.with_displays(DisplaySelection::Explicit(vec![display])));
-        let bar = match bar {
-            Ok(bar) => bar,
+        let bar = match Thickness::new(px(40.)) {
+            Ok(thickness) => ShellBar::new(thickness)
+                .full_length()
+                .margins(gpui::Edges::all(px(12.)))
+                .output(display),
             Err(error) => {
-                self.fail("declare reference bar", io::Error::other(error), cx);
+                self.fail("declare reference bar", error, cx);
                 return;
             }
         };
         let measured = self.measured_bar.clone();
-        let result = self.runtime.mount_bottom_bar(
-            bar,
-            move |display, window, cx| {
-                println!("BAR_CREATED display={display:?} layer=Top reservation=52 source=unchanged-BottomBar");
-                window.set_input_region(Some(&[]));
+        let result = bar.mount(
+            &self.runtime,
+            move |instance, _, _, cx| {
+                let display = instance.display_id();
+                println!(
+                    "BAR_CREATED display={display:?} layer=Top reservation=52 source=unchanged-Bar"
+                );
                 let measured = measured.clone();
-                cx.new(|_| Reference {
+                Ok(cx.new(|cx| Reference {
                     display,
                     measured,
                     clicks: 0,
-                })
+                    glass: bkss_ui::effects::MountedGlass::new(GlassStyle::default(), cx),
+                }))
             },
             cx,
         );
-        if let Err(error) = result {
-            self.fail("mount reference Top BottomBar", error, cx);
+        match result {
+            Ok(handle) => *self.reference_bar.borrow_mut() = Some(handle),
+            Err(error) => self.fail("mount reference Top bar", error, cx),
         }
     }
 
@@ -689,7 +680,7 @@ impl Render for Controls {
                 "1  Open A, then use Open B from A inside its card.\n2  Press A / B without clicking B. Read the actual KEY recipient.\n3  Escape closes its recipient; press again without clicking A.\n4  Repeat in reverse order. None receives no keys: use the in-card close/stop buttons."
             }
             Case::Geometry => {
-                "Launch one variant at a time. Compare edge markers and VIEWPORT logs.\nA reserving, unchanged Top BottomBar is mounted on first launch.\nStretch requests zero width and height with all four anchors.\nCompare the clipped and scrollable oversized samples inside the card."
+                "Launch one variant at a time. Compare edge markers and VIEWPORT logs.\nA reserving, unchanged Top Bar is mounted on first launch.\nStretch requests zero width and height with all four anchors.\nCompare the clipped and scrollable oversized samples inside the card."
             }
             Case::Stacking => {
                 "Place the ordinary witness behind the trial using your window controls.\nClick content, then outside, then the bar. Reopen and compare counters.\nOFF: full transparent allocation; only content accepts pointer input.\nFULL: outside pointer-down is consumed and closes this trial."
@@ -704,7 +695,7 @@ impl Render for Controls {
             .child(panel().child("Start deliberately").child(format!("No native trial opens until you click below. Watchdog: {} seconds from setup.", o.args.seconds)).child(actions))
             .child(panel().child(instructions))
             .child(div().text_color(rgb(0xa8bdc5)).child("UNSUPPORTED: runtime keyboard-mode setter; seat identification. Creation modes only. Active-window flags are observations, not evidence of key delivery. No BKSS arbitration or compositor guarantee."))
-            .child(if o.args.backdrop == Backdrop::SharedScene { "Shared scene uses a mock, non-reserving embedded bar in the same root. No independent BottomBar is mounted; this does not preserve production bar independence." } else { "Same-layer ordering is unspecified. A painted/input hole does not establish native surface ordering. BAR-HOLE maps measured reference content to the display bottom; native global surface origin is unavailable, so alignment is approximate." })
+            .child(if o.args.backdrop == Backdrop::SharedScene { "Shared scene uses a mock, non-reserving embedded bar in the same root. No independent Bar is mounted; this does not preserve production bar independence." } else { "Same-layer ordering is unspecified. A painted/input hole does not establish native surface ordering. BAR-HOLE maps measured reference visual to the display bottom; native global surface origin is unavailable, so alignment is approximate." })
             .child(div().flex().gap_3().child(witness).child(quit))
     }
 }
@@ -733,6 +724,7 @@ struct Reference {
     display: DisplayId,
     measured: Rc<Cell<Option<Bounds<Pixels>>>>,
     clicks: u64,
+    glass: bkss_ui::effects::MountedGlass,
 }
 
 impl Render for Reference {
@@ -740,16 +732,18 @@ impl Render for Reference {
         let measured = self.measured.clone();
         let display = self.display;
         let width = (window.viewport_size().width - px(24.)).max(px(0.));
-        div().id("reference-bar").relative().w(width).h(px(40.)).overflow_hidden()
-            .bg(rgb(0xa56b32)).text_color(rgb(0xffffff)).font_family("sans-serif").text_size(px(14.))
-            .flex().items_center().justify_center().cursor_pointer()
+        div().id("reference-bar")
             .on_any_mouse_down(cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
                 this.clicks += 1;
                 println!("BAR_POINTER source=independent-Top count={} local={:?} viewport={:?}", this.clicks, event.position, window.viewport_size());
                 cx.stop_propagation();
                 cx.notify();
             }))
-            .child(format!("Independent Top BottomBar · reserves 52 logical px · BAR_POINTER {}", self.clicks))
+            .child(self.glass.element(GlassState::default(), cx)
+            .relative().w(width).h(px(40.)).overflow_hidden()
+            .bg(rgb(0xa56b32)).text_color(rgb(0xffffff)).font_family("sans-serif").text_size(px(14.))
+            .flex().items_center().justify_center().cursor_pointer()
+            .child(format!("Independent Top Bar · reserves 52 logical px · BAR_POINTER {}", self.clicks))
             .child(canvas(move |bounds, window, cx| {
                 if let Some(display) = cx.displays().into_iter().find(|d| d.id() == display) {
                     let mut mapped = bounds;
@@ -759,7 +753,7 @@ impl Render for Reference {
                         cx.refresh_windows();
                     }
                 }
-            }, |_, (), _, _| {}).absolute().inset_0().size_full())
+            }, |_, (), _, _| {}).absolute().inset_0().size_full()))
     }
 }
 
@@ -1070,6 +1064,7 @@ fn run(args: Args) -> Result<(), Box<dyn Error>> {
         let owner = Rc::new(Owner {
             args,
             runtime,
+            reference_bar: RefCell::new(None),
             stopped: Cell::new(false),
             display: Cell::new(None),
             root: Cell::new(None),

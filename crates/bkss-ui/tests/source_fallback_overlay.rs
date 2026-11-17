@@ -7,7 +7,7 @@ use std::{
 use bkss_core::{
     MountedBinding, Shell, ShellError, Source, SourceDescriptor, SourcePublisher, SourceState,
 };
-use bkss_ui::{KeyboardFocus, OverlayDefinition, OverlayRuntimeHandleExt};
+use bkss_ui::Overlay;
 use gpui::{App, AppContext, Context, Render, TestAppContext, Window, div, prelude::*, px};
 
 struct DelayedSource {
@@ -66,13 +66,12 @@ fn overlay_consumers_share_and_release_delayed_source_activations() {
         let runtime = Shell::attach(cx, |_, _| Ok(())).unwrap();
         let handles = (0..2)
             .map(|_| {
-                let weak = runtime.downgrade();
                 let descriptor = descriptor.clone();
                 let values = Rc::clone(&mounted_values);
-                runtime
-                    .mount_overlay(
-                        OverlayDefinition::new(KeyboardFocus::None),
-                        move |_, _, cx| {
+                Overlay::new()
+                    .mount(
+                        &runtime,
+                        move |_, weak, _, cx| {
                             let runtime = weak.upgrade().ok_or_else(|| {
                                 ShellError::setup(io::Error::other("runtime gone"))
                             })?;
@@ -91,8 +90,8 @@ fn overlay_consumers_share_and_release_delayed_source_activations() {
     assert_eq!(starts.get(), 0);
     assert!(mounted_values.borrow().is_empty());
     cx.update(|cx| {
-        handles[0].open(display, cx).unwrap();
-        handles[1].open(display, cx).unwrap();
+        handles[0].show(display, cx).unwrap();
+        handles[1].show(display, cx).unwrap();
     });
     cx.run_until_parked();
     assert_eq!(mounted_values.borrow().len(), 2);
@@ -113,14 +112,14 @@ fn overlay_consumers_share_and_release_delayed_source_activations() {
             .all(|reactive| reactive.get(&cx) == SourceState::Ready(None))
     );
 
-    cx.update(|cx| handles[0].close(display, cx).unwrap());
+    cx.update(|cx| handles[0].hide(display, cx).unwrap());
     cx.run_until_parked();
     assert_eq!(stops.get(), 0);
-    cx.update(|cx| handles[1].close(display, cx).unwrap());
+    cx.update(|cx| handles[1].hide(display, cx).unwrap());
     cx.run_until_parked();
     assert_eq!(stops.get(), 1);
 
-    cx.update(|cx| handles[0].open(display, cx).unwrap());
+    cx.update(|cx| handles[0].show(display, cx).unwrap());
     cx.run_until_parked();
     assert_eq!(starts.get(), 2);
     assert_eq!(mounted_values.borrow().len(), 3);
