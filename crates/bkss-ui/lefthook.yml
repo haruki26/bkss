@@ -23,6 +23,7 @@ pre-push:
         - "crates/bkss-ui/*.rs"
         - "crates/bkss-ui/**/*.rs"
         - "crates/bkss-ui/Cargo.toml"
+        - "crates/bkss-ui/lefthook.yml"
         - "Cargo.toml"
         - "Cargo.lock"
       run: cargo test -p bkss-ui

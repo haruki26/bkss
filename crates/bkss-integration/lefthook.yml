@@ -1,0 +1,29 @@
+pre-commit:
+  parallel: true
+  commands:
+    integration-format:
+      root: crates/bkss-integration
+      glob:
+        - "crates/bkss-integration/*.rs"
+        - "crates/bkss-integration/**/*.rs"
+      run: cargo fmt -- {staged_files}
+      stage_fixed: true
+    integration-lint:
+      root: crates/bkss-integration
+      glob:
+        - "crates/bkss-integration/*.rs"
+        - "crates/bkss-integration/**/*.rs"
+      run: cargo clippy
+      stage_fixed: true
+
+pre-push:
+  commands:
+    integration-test:
+      glob:
+        - "crates/bkss-integration/*.rs"
+        - "crates/bkss-integration/**/*.rs"
+        - "crates/bkss-integration/Cargo.toml"
+        - "crates/bkss-integration/lefthook.yml"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      run: cargo test -p bkss-integration

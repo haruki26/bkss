@@ -1,3 +1,4 @@
 extends:
   - crates/bkss-core/lefthook.yml
+  - crates/bkss-integration/lefthook.yml
   - crates/bkss-ui/lefthook.yml

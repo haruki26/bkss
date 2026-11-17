@@ -23,6 +23,7 @@ pre-push:
         - "crates/bkss-core/*.rs"
         - "crates/bkss-core/**/*.rs"
         - "crates/bkss-core/Cargo.toml"
+        - "crates/bkss-core/lefthook.yml"
         - "Cargo.toml"
         - "Cargo.lock"
       run: cargo test -p bkss-core
