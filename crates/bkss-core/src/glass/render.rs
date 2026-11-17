@@ -16,6 +16,22 @@ pub struct GlassElement {
     decoration: ResolvedGlassStyle,
 }
 
+impl GlassElement {
+    /// Creates a fresh, static element with the default decoration.
+    ///
+    /// For a reactive or custom `GlassStyle`, keep using
+    /// `bkss_core::Glass::new(style, cx).element(state, cx)`.
+    pub fn new() -> Self {
+        element(ResolvedGlassStyle::default())
+    }
+}
+
+impl Default for GlassElement {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub(super) fn element(decoration: ResolvedGlassStyle) -> GlassElement {
     GlassElement {
         container: div().relative(),
@@ -199,5 +215,14 @@ mod tests {
         assert_eq!(rim.border_widths, Edges::all(px(2.)));
         assert!(ring(bounds, px(20.), 20., 2., Hsla::white()).is_none());
         assert!(ring(bounds, px(20.), 0., 0., Hsla::white()).is_none());
+    }
+
+    #[test]
+    fn default_glass_element_supports_styled_parent_composition() {
+        let element = GlassElement::new().p_4().rounded_xl().child("Content");
+        drop(element);
+
+        let element = GlassElement::default().child("Default");
+        drop(element);
     }
 }
