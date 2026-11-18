@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     num::NonZeroUsize,
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::base::command::{self, CommandHandle, CommandReceiver, Operation};
@@ -11,9 +11,6 @@ use crate::base::worker::Cancellation;
 use super::NotificationsError;
 
 pub const MAX_ACTIVE: usize = 128;
-/// `-1` uses this server default (10 seconds); `0` disables expiration.
-pub const DEFAULT_TIMEOUT_MS: i32 = 10_000;
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Notification {
     pub id: u32,
@@ -77,6 +74,7 @@ pub(super) struct NotificationStore {
 pub(super) struct Store {
     notifications: BTreeMap<u32, StoredNotification>,
     next_id: u32,
+    default_timeout: Duration,
 }
 
 struct StoredNotification {
@@ -85,13 +83,14 @@ struct StoredNotification {
 }
 
 impl NotificationStore {
-    pub(super) fn new() -> (Self, async_channel::Receiver<()>) {
+    pub(super) fn new(default_timeout: Duration) -> (Self, async_channel::Receiver<()>) {
         let (changed, receiver) = async_channel::bounded(1);
         (
             Self {
                 store: Arc::new(Mutex::new(Store {
                     notifications: BTreeMap::new(),
                     next_id: 1,
+                    default_timeout,
                 })),
                 changed,
             },
@@ -219,12 +218,11 @@ impl Store {
         let id = replaced.unwrap_or_else(|| self.allocate_id());
         notification.id = id;
         let timeout = if expire_timeout == -1 {
-            DEFAULT_TIMEOUT_MS
+            (self.default_timeout != Duration::ZERO).then_some(self.default_timeout)
         } else {
-            expire_timeout
+            (expire_timeout > 0).then(|| Duration::from_millis(expire_timeout as u64))
         };
-        let expires = (timeout > 0)
-            .then(|| Instant::now() + std::time::Duration::from_millis(timeout as u64));
+        let expires = timeout.and_then(|timeout| Instant::now().checked_add(timeout));
         self.notifications.insert(
             id,
             StoredNotification {
@@ -272,5 +270,60 @@ impl Store {
             self.notifications.remove(id);
         }
         expired
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn notification(resident: bool) -> Notification {
+        Notification {
+            id: 0,
+            app_name: String::new(),
+            app_icon: String::new(),
+            summary: String::new(),
+            body: String::new(),
+            actions: vec![("open".into(), "Open".into())],
+            urgency: None,
+            resident,
+        }
+    }
+
+    #[test]
+    fn timeout_policy_respects_default_explicit_and_replacement_values() {
+        let mut store = Store {
+            notifications: BTreeMap::new(),
+            next_id: 1,
+            default_timeout: Duration::from_secs(10),
+        };
+        let (default_id, _) = store.insert(notification(false), 0, -1).unwrap();
+        let (replacement_id, _) = store.insert(notification(false), 0, -1).unwrap();
+        store
+            .insert(notification(false), replacement_id, 0)
+            .unwrap();
+        let (finite_id, _) = store.insert(notification(false), 0, 30).unwrap();
+        let (zero_id, _) = store.insert(notification(true), 0, 0).unwrap();
+
+        let after_deadlines = Instant::now() + Duration::from_secs(11);
+        assert_eq!(store.expire(after_deadlines), [default_id, finite_id]);
+        assert!(store.notifications.contains_key(&replacement_id));
+        assert!(store.notifications.contains_key(&zero_id));
+    }
+
+    #[test]
+    fn zero_default_keeps_defaulted_notification_and_its_action_available() {
+        let (store, _) = NotificationStore::new(Duration::ZERO);
+        let (default_id, _) = store.insert(notification(true), 0, -1).unwrap();
+        let (finite_id, _) = store.insert(notification(false), 0, 30).unwrap();
+        let (zero_id, _) = store.insert(notification(true), 0, 0).unwrap();
+
+        assert_eq!(
+            store.expire(Instant::now() + Duration::from_secs(11)),
+            [finite_id]
+        );
+        assert!(!store.invoke(default_id, "open").unwrap());
+        assert!(!store.invoke(default_id, "open").unwrap());
+        assert!(!store.invoke(zero_id, "open").unwrap());
     }
 }

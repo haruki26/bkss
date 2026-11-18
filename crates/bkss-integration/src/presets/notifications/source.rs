@@ -30,14 +30,13 @@ impl fmt::Debug for NotificationsEndpoint {
 
 pub struct Notifications {
     endpoint: NotificationsEndpoint,
+    default_timeout: Duration,
 }
 
 impl Notifications {
     /// Declares a notifications server on the session bus; no connection starts until mounted.
     pub fn new() -> SourceDescriptor<Self> {
-        SourceDescriptor::new(Self {
-            endpoint: NotificationsEndpoint::Session,
-        })
+        Self::with_default_timeout(NotificationsEndpoint::Session, Duration::from_secs(10))
     }
 
     /// Declares a notifications server on an explicit D-Bus address.
@@ -45,20 +44,33 @@ impl Notifications {
     /// The address participates in the source key, allowing isolated private-bus
     /// instances without changing the process session-bus environment.
     pub fn with_address(address: impl Into<String>) -> SourceDescriptor<Self> {
+        Self::with_default_timeout(
+            NotificationsEndpoint::Address(address.into()),
+            Duration::from_secs(10),
+        )
+    }
+
+    /// Declares a notifications server with a configurable default for client timeout `-1`.
+    /// A zero timeout disables only the default; explicit client timeouts remain honored.
+    pub fn with_default_timeout(
+        endpoint: NotificationsEndpoint,
+        timeout: Duration,
+    ) -> SourceDescriptor<Self> {
         SourceDescriptor::new(Self {
-            endpoint: NotificationsEndpoint::Address(address.into()),
+            endpoint,
+            default_timeout: timeout,
         })
     }
 }
 
 impl Source for Notifications {
-    type Key = NotificationsEndpoint;
+    type Key = (NotificationsEndpoint, Duration);
     type Value = NotificationsState;
     type Error = NotificationsError;
     type Guard = WorkerGuard;
 
     fn key(&self) -> Self::Key {
-        self.endpoint.clone()
+        (self.endpoint.clone(), self.default_timeout)
     }
 
     fn start(
@@ -68,12 +80,18 @@ impl Source for Notifications {
     ) -> Result<Self::Guard, Self::Error> {
         let (thread_publisher, bridge) = publisher.thread_bridge(|value| value, |error| error, cx);
         let endpoint = self.endpoint.clone();
+        let default_timeout = self.default_timeout;
         spawn_worker(
             "bkss-notifications-server",
             bridge,
             thread_publisher.clone(),
             move |publisher, cancellation| {
-                futures_lite::future::block_on(run(endpoint, publisher, cancellation))
+                futures_lite::future::block_on(run(
+                    endpoint,
+                    default_timeout,
+                    publisher,
+                    cancellation,
+                ))
             },
         )
         .map_err(NotificationsError::from)
@@ -82,10 +100,11 @@ impl Source for Notifications {
 
 async fn run(
     endpoint: NotificationsEndpoint,
+    default_timeout: Duration,
     publisher: ThreadPublisher<NotificationsState, NotificationsError>,
     cancellation: Cancellation,
 ) -> Result<(), NotificationsError> {
-    let (store, changed) = NotificationStore::new();
+    let (store, changed) = NotificationStore::new(default_timeout);
     let (commands, receiver) = command_queue(cancellation.clone());
     let startup = futures_lite::future::race(
         async {
@@ -218,4 +237,22 @@ enum Event {
     Changed,
     Expiration,
     Disconnected,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_timeout_participates_in_source_identity() {
+        let default = Notifications {
+            endpoint: NotificationsEndpoint::Session,
+            default_timeout: Duration::from_secs(10),
+        };
+        let retained = Notifications {
+            endpoint: NotificationsEndpoint::Session,
+            default_timeout: Duration::ZERO,
+        };
+        assert_ne!(default.key(), retained.key());
+    }
 }

@@ -7,7 +7,7 @@ use std::{
 };
 
 use bkss_core::{ResourceScope, SourceState};
-use bkss_integration::{Notifications, NotificationsError, OperationError};
+use bkss_integration::{Notifications, NotificationsEndpoint, NotificationsError, OperationError};
 use futures_lite::StreamExt;
 use gpui::TestAppContext;
 use zbus::{Connection, Proxy, fdo::RequestNameFlags, zvariant::OwnedValue};
@@ -223,6 +223,7 @@ fn protocol_replacement_action_close_expiry_and_lifetime() {
     };
     futures_lite::future::block_on(async {
         let cx = TestAppContext::single();
+        cx.dispatcher.allow_parking();
         let scope = cx.update(ResourceScope::new);
         let descriptor = Notifications::with_address(bus.address.clone());
         let lease = cx.update(|cx| scope.acquire(&descriptor, cx).expect("mount source"));
@@ -501,6 +502,85 @@ fn protocol_replacement_action_close_expiry_and_lifetime() {
 }
 
 #[test]
+fn configured_default_timeout_zero_keeps_defaulted_notification_until_dismissed() {
+    let Some(bus) = PrivateBus::start().expect("start private dbus-daemon") else {
+        eprintln!("skipped: dbus-daemon is not installed");
+        return;
+    };
+    futures_lite::future::block_on(async {
+        let cx = TestAppContext::single();
+        cx.dispatcher.allow_parking();
+        let scope = cx.update(ResourceScope::new);
+        let descriptor = Notifications::with_default_timeout(
+            NotificationsEndpoint::Address(bus.address.clone()),
+            Duration::ZERO,
+        );
+        let lease = cx.update(|cx| scope.acquire(&descriptor, cx).expect("mount source"));
+        let reactive = lease.reactive();
+        wait_ready(&cx, &reactive, 0);
+
+        let client = connect(&bus.address).await.expect("private bus connection");
+        let proxy = Proxy::new(&client, NAME, PATH, IFACE)
+            .await
+            .expect("notification proxy");
+        let id = notify(&proxy, 0, "retained default", -1)
+            .await
+            .expect("Notify");
+        wait_ready(&cx, &reactive, 1);
+        let mut closed_signal = proxy
+            .receive_signal("NotificationClosed")
+            .await
+            .expect("closed signal");
+        let finite_id = notify(&proxy, 0, "finite override", 40)
+            .await
+            .expect("finite Notify");
+        let no_expiry_id = notify(&proxy, 0, "explicit no expiry", 0)
+            .await
+            .expect("zero-timeout Notify");
+        wait_ready(&cx, &reactive, 3);
+        assert_eq!(
+            next_signal(&mut closed_signal)
+                .await
+                .body()
+                .deserialize::<(u32, u32)>()
+                .expect("finite expiration signal"),
+            (finite_id, 1)
+        );
+        wait_ready(&cx, &reactive, 2);
+        assert_count_for(&cx, &reactive, 2, Duration::from_millis(300));
+
+        let state = match reactive.get(&cx) {
+            SourceState::Ready(state) => state,
+            _ => panic!("notification source is not ready"),
+        };
+        futures_lite::future::block_on(state.dismiss(id).expect("dispatch dismiss"))
+            .expect("dismiss notification");
+        assert_eq!(
+            next_signal(&mut closed_signal)
+                .await
+                .body()
+                .deserialize::<(u32, u32)>()
+                .expect("dismiss signal"),
+            (id, 2)
+        );
+        wait_ready(&cx, &reactive, 1);
+        proxy
+            .call::<_, _, ()>("CloseNotification", &(no_expiry_id,))
+            .await
+            .expect("close explicit zero-timeout notification");
+        assert_eq!(
+            next_signal(&mut closed_signal)
+                .await
+                .body()
+                .deserialize::<(u32, u32)>()
+                .expect("manual close signal"),
+            (no_expiry_id, 3)
+        );
+        wait_ready(&cx, &reactive, 0);
+    });
+}
+
+#[test]
 fn name_collision_does_not_replace_owner_and_can_be_acquired_after_release() {
     let Some(bus) = PrivateBus::start().expect("start private dbus-daemon") else {
         eprintln!("skipped: dbus-daemon is not installed");
@@ -528,6 +608,7 @@ fn name_collision_does_not_replace_owner_and_can_be_acquired_after_release() {
             .await
             .expect("record original owner");
         let cx = TestAppContext::single();
+        cx.dispatcher.allow_parking();
         let scope = cx.update(ResourceScope::new);
         let descriptor = Notifications::with_address(bus.address.clone());
         let lease = cx.update(|cx| {
