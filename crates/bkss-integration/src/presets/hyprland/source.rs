@@ -46,32 +46,23 @@ impl Hyprland {
         thread::Builder::new()
             .name("bkss-hyprland-command".into())
             .spawn(move || {
-                let result = if workspace.is_empty()
-                    || workspace.len() > 512
-                    || workspace.contains(['\n', '\r', '\0', ';'])
-                {
-                    Err(protocol(
+                let result = match workspace_dispatch_request(&workspace) {
+                    Err(message) => Err(protocol(
                         "switch Hyprland workspace",
-                        "workspace name is empty or contains invalid characters",
+                        message,
                         Some(socket.clone()),
-                    ))
-                } else {
-                    command(&socket, &format!("dispatch workspace {workspace}")).and_then(
-                        |response| {
-                            if response.trim() == "ok" {
-                                Ok(())
-                            } else {
-                                Err(protocol(
-                                    "switch Hyprland workspace",
-                                    &format!(
-                                        "Hyprland rejected the workspace: {}",
-                                        response.trim()
-                                    ),
-                                    Some(socket.clone()),
-                                ))
-                            }
-                        },
-                    )
+                    )),
+                    Ok(request) => command(&socket, &request).and_then(|response| {
+                        if response.trim().starts_with("ok") {
+                            Ok(())
+                        } else {
+                            Err(protocol(
+                                "switch Hyprland workspace",
+                                &format!("Hyprland rejected the workspace: {}", response.trim()),
+                                Some(socket.clone()),
+                            ))
+                        }
+                    }),
                 };
                 let _ = sender.try_send(result);
             })?;
@@ -85,6 +76,48 @@ impl Hyprland {
             })
         }))
     }
+}
+
+fn workspace_dispatch_request(workspace: &str) -> Result<String, &'static str> {
+    if workspace.is_empty() || workspace.len() > 512 || workspace.contains(['\n', '\r', '\0', ';'])
+    {
+        return Err("workspace name is empty or contains invalid characters");
+    }
+
+    if let Ok(id) = workspace.parse::<i64>() {
+        return Ok(format!("/dispatch hl.dsp.focus({{ workspace = {id} }})"));
+    }
+
+    let name = workspace.strip_prefix("name:").unwrap_or(workspace);
+    if name.is_empty() {
+        return Err("workspace name is empty or contains invalid characters");
+    }
+    Ok(format!(
+        "/dispatch hl.dsp.focus({{ workspace = {} }})",
+        lua_string(&format!("name:{name}"))
+    ))
+}
+
+fn lua_string(value: &str) -> String {
+    let mut encoded = String::with_capacity(value.len() + 2);
+    encoded.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => encoded.push_str("\\\""),
+            '\\' => encoded.push_str("\\\\"),
+            '\n' => encoded.push_str("\\n"),
+            '\r' => encoded.push_str("\\r"),
+            '\t' => encoded.push_str("\\t"),
+            character if character.is_control() => {
+                for byte in character.to_string().bytes() {
+                    encoded.push_str(&format!("\\{byte:03}"));
+                }
+            }
+            character => encoded.push(character),
+        }
+    }
+    encoded.push('"');
+    encoded
 }
 
 impl Source for Hyprland {

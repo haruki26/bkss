@@ -1,5 +1,7 @@
 use bkss_core::{ResourceScope, SourceState};
-use bkss_integration::{Hyprland, HyprlandError, HyprlandState, Workspace};
+use bkss_integration::{
+    ActiveWorkspace, Hyprland, HyprlandError, HyprlandState, SpecialWorkspace, Workspace,
+};
 use gpui::TestAppContext;
 use std::{
     error::Error,
@@ -61,7 +63,7 @@ fn command_server(
             stream
                 .write_all(response.as_bytes())
                 .expect("write response");
-            if index == 2 {
+            if index == 4 {
                 initial_done.send(()).expect("signal initial snapshot");
             }
         }
@@ -112,6 +114,7 @@ fn wait_ready(
 #[test]
 fn activation_is_lazy_shared_event_driven_and_stops_on_last_release() {
     let cx = TestAppContext::single();
+    cx.dispatcher.allow_parking();
     let dir = socket_dir();
     let commands = UnixListener::bind(dir.join(".socket.sock")).expect("command socket");
     let events = UnixListener::bind(dir.join(".socket2.sock")).expect("event socket");
@@ -137,12 +140,26 @@ fn activation_is_lazy_shared_event_driven_and_stops_on_last_release() {
     let command_worker = command_server(
         commands,
         vec![
-            r#"[{"id":1,"name":"one"}]"#,
-            r#"{"id":1,"name":"one"}"#,
+            r#"[{"address":"0x1","type":"normal","id":1,"name":"one"}]"#,
+            r#"{"address":"0x1","type":"normal","id":1,"name":"one"}"#,
             "{}",
-            r#"[{"id":2,"name":"two"}]"#,
-            r#"{"id":2,"name":"two"}"#,
+            r#"[{"address":"0xa","class":"kitty","workspace":{"address":"0x1","type":"normal","name":"one"}},{"address":"0xb","class":"firefox","workspace":{"address":"0x2","type":"normal","name":"two"}}]"#,
+            "[]",
+            r#"[{"address":"0x2","type":"normal","id":2,"name":"two"}]"#,
+            r#"{"address":"0x2","type":"normal","id":2,"name":"two"}"#,
             "{}",
+            r#"[{"address":"0xa","class":"kitty","workspace":{"address":"0x2","type":"normal","name":"two"}}]"#,
+            "[]",
+            r#"[{"address":"0x1","type":"normal","id":1,"name":"one"},{"address":"0x3","type":"special","name":"special"}]"#,
+            r#"{"address":"0x1","type":"normal","id":1,"name":"one"}"#,
+            "{}",
+            r#"[{"address":"0xa","class":"kitty","workspace":{"address":"0x1","type":"normal","name":"one"}}]"#,
+            r#"[{"focused":true,"specialWorkspace":{"address":"0x3","type":"special","name":"special"}}]"#,
+            r#"[{"address":"0x1","type":"normal","id":1,"name":"one"}]"#,
+            r#"{"address":"0x1","type":"normal","id":1,"name":"one"}"#,
+            "{}",
+            r#"[{"address":"0xa","class":"kitty","workspace":{"address":"0x1","type":"normal","name":"one"}}]"#,
+            "[]",
         ],
         initial_tx,
     );
@@ -162,13 +179,28 @@ fn activation_is_lazy_shared_event_driven_and_stops_on_last_release() {
 
     let first = HyprlandState {
         workspaces: vec![Workspace {
-            id: 1,
+            address: "0x1".into(),
+            id: Some(1),
             name: "one".into(),
         }],
-        active_workspace: Some(Workspace {
-            id: 1,
+        special_workspaces: vec![],
+        clients: vec![
+            bkss_integration::HyprlandClient {
+                address: "0xa".into(),
+                class: "kitty".into(),
+                workspace_address: Some("0x1".into()),
+            },
+            bkss_integration::HyprlandClient {
+                address: "0xb".into(),
+                class: "firefox".into(),
+                workspace_address: Some("0x2".into()),
+            },
+        ],
+        active_workspace: Some(ActiveWorkspace::Normal(Workspace {
+            address: "0x1".into(),
+            id: Some(1),
             name: "one".into(),
-        }),
+        })),
         active_window: None,
     };
     wait_ready(&cx, &reactive, &first);
@@ -189,20 +221,89 @@ fn activation_is_lazy_shared_event_driven_and_stops_on_last_release() {
 
     let updated = HyprlandState {
         workspaces: vec![Workspace {
-            id: 2,
+            address: "0x2".into(),
+            id: Some(2),
             name: "two".into(),
         }],
-        active_workspace: Some(Workspace {
-            id: 2,
+        special_workspaces: vec![],
+        clients: vec![bkss_integration::HyprlandClient {
+            address: "0xa".into(),
+            class: "kitty".into(),
+            workspace_address: Some("0x2".into()),
+        }],
+        active_workspace: Some(ActiveWorkspace::Normal(Workspace {
+            address: "0x2".into(),
+            id: Some(2),
             name: "two".into(),
-        }),
+        })),
         active_window: None,
     };
     wait_ready(&cx, &reactive, &updated);
+    event_tx
+        .send(b"workspace>>3\n".to_vec())
+        .expect("special workspace event");
+    event_write_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("special event write")
+        .expect("special event write succeeds");
+    let special = HyprlandState {
+        workspaces: vec![Workspace {
+            address: "0x1".into(),
+            id: Some(1),
+            name: "one".into(),
+        }],
+        special_workspaces: vec![SpecialWorkspace {
+            address: "0x3".into(),
+            name: "special".into(),
+        }],
+        clients: vec![bkss_integration::HyprlandClient {
+            address: "0xa".into(),
+            class: "kitty".into(),
+            workspace_address: Some("0x1".into()),
+        }],
+        active_workspace: Some(ActiveWorkspace::Special(
+            bkss_integration::SpecialWorkspace {
+                address: "0x3".into(),
+                name: "special".into(),
+            },
+        )),
+        active_window: None,
+    };
+    wait_ready(&cx, &reactive, &special);
+    event_tx
+        .send(b"workspace>>1\n".to_vec())
+        .expect("normal workspace event");
+    event_write_rx
+        .recv_timeout(Duration::from_secs(1))
+        .expect("normal event write")
+        .expect("normal event write succeeds");
+    let returned_to_normal = HyprlandState {
+        workspaces: vec![Workspace {
+            address: "0x1".into(),
+            id: Some(1),
+            name: "one".into(),
+        }],
+        special_workspaces: vec![],
+        clients: vec![bkss_integration::HyprlandClient {
+            address: "0xa".into(),
+            class: "kitty".into(),
+            workspace_address: Some("0x1".into()),
+        }],
+        active_workspace: Some(ActiveWorkspace::Normal(Workspace {
+            address: "0x1".into(),
+            id: Some(1),
+            name: "one".into(),
+        })),
+        active_window: None,
+    };
+    wait_ready(&cx, &reactive, &returned_to_normal);
     command_worker.join().expect("command server completed");
 
     drop(lease);
-    assert_eq!(reactive.get(&cx), SourceState::Ready(updated.clone()));
+    assert_eq!(
+        reactive.get(&cx),
+        SourceState::Ready(returned_to_normal.clone())
+    );
     drop(shared);
     thread::sleep(Duration::from_millis(350));
     event_tx
@@ -218,7 +319,7 @@ fn activation_is_lazy_shared_event_driven_and_stops_on_last_release() {
         scope.failure().is_none(),
         "cancellation is not a source failure"
     );
-    assert_eq!(reactive.get(&cx), SourceState::Ready(updated));
+    assert_eq!(reactive.get(&cx), SourceState::Ready(returned_to_normal));
     event_worker.join().expect("event server completed");
     fs::remove_dir_all(dir).expect("remove test directory");
 }
@@ -226,6 +327,7 @@ fn activation_is_lazy_shared_event_driven_and_stops_on_last_release() {
 #[test]
 fn worker_connection_and_protocol_errors_reach_scope_with_original_cause() {
     let cx = TestAppContext::single();
+    cx.dispatcher.allow_parking();
     let dir = socket_dir();
     let commands = UnixListener::bind(dir.join(".socket.sock")).expect("command socket");
     let events = UnixListener::bind(dir.join(".socket2.sock")).expect("event socket");

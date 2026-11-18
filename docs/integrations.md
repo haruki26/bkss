@@ -73,7 +73,11 @@ operation.await?;
 
 最初の Result はキューへの受付結果、await 後の Result は操作結果です。`DispatchError` は停止済みまたはキュー満杯を、`OperationError` は activation の終了またはバックエンドの失敗を区別します。待機 future を破棄しても、実行開始済みの操作の取消は保証しません。
 
-Hyprland の workspace 切り替えには `Hyprland::switch_workspace(socket_dir, "2")?.await?` を使います。
+Hyprland の workspace 切り替えには `Hyprland::switch_workspace(socket_dir, "2")?.await?` を使います。名前付き通常 workspace は Hyprland の dispatcher selector `name:<name>`（例: `"name:chat"`）で指定します。取得状態は `workspaces` と `special_workspaces` に分かれ、通常 workspace の `id` は名前付きの場合 `None` です。`active_workspace` は `ActiveWorkspace::Normal` または `ActiveWorkspace::Special` で種別を保持します。`clients` は全 workspace の `HyprlandClient` を含み、`workspace_address` で所属先を示します（所属先がない場合は `None`）。
+
+切り替え要求は Hyprland 0.57.2 の Lua dispatcher 形式 `/dispatch hl.dsp.focus({ workspace = ... })` を使用します。数値は Lua number、名前はエスケープした Lua string として渡し、compositor が返す失敗を操作結果へ伝えます。旧形式の `dispatch workspace ...` は送信しません。
+
+`active_workspace` はフォーカス中モニターで表示中の special workspace を優先します。Hyprland の `activeworkspace` が背後の通常 workspace を返す場合も、`monitors` の `specialWorkspace` から空でない address を取得します。ウィンドウのない special も同じ扱いです。表示中 special がなければ通常の `activeworkspace` へ戻ります。出力別の状態一覧ではなく、グローバルなフォーカス状態です。
 
 ## 外部プロセスからの command IPC
 

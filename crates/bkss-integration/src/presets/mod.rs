@@ -25,7 +25,8 @@ pub use bluetooth::{
 pub use clock::{Clock, ClockPrecision, ClockState};
 pub use command_ipc::{CommandIpc, CommandIpcClient, CommandIpcRequest, CommandIpcState};
 pub use hyprland::{
-    ActiveWindow, Hyprland, HyprlandError, HyprlandState, Workspace, WorkspaceSwitch,
+    ActiveWindow, ActiveWorkspace, Hyprland, HyprlandClient, HyprlandError, HyprlandState,
+    SpecialWorkspace, Workspace, WorkspaceSwitch,
 };
 pub use notifications::{
     Notification, Notifications, NotificationsEndpoint, NotificationsError, NotificationsState,

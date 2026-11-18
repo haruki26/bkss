@@ -228,6 +228,8 @@ fn preset_states_provide_composable_gpui_elements() {
             let usage = Usage::from_parts(1, 4);
             let hyprland = HyprlandState {
                 workspaces: Vec::new(),
+                special_workspaces: Vec::new(),
+                clients: Vec::new(),
                 active_workspace: None,
                 active_window: None,
             };

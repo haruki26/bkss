@@ -1,7 +1,7 @@
 use crate::IntegrationView;
 use gpui::{AnyElement, App, Window, div, prelude::*};
 
-use super::state::HyprlandState;
+use super::state::{ActiveWorkspace, HyprlandState};
 
 impl IntegrationView for HyprlandState {
     fn render(&self, _: &mut Window, _: &mut App) -> AnyElement {
@@ -9,7 +9,10 @@ impl IntegrationView for HyprlandState {
             .child(
                 self.active_workspace
                     .as_ref()
-                    .map(|workspace| workspace.name.clone())
+                    .map(|workspace| match workspace {
+                        ActiveWorkspace::Normal(workspace) => workspace.name.clone(),
+                        ActiveWorkspace::Special(workspace) => workspace.name.clone(),
+                    })
                     .unwrap_or_default(),
             )
             .into_any_element()
