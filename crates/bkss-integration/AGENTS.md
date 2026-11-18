@@ -4,7 +4,7 @@
 
 - `src/lib.rs` は公開 API の再エクスポートを担う。内部 module の移動だけで crate root の import を変えない。
 - `src/base/` は worker・キャンセル、bounded な操作キュー、認証 responder、`IntegrationView` の共通契約を所有する。新しいプリセットで同じ実行機構を作り直さない。
-- `src/presets/<integration>/` が取得・操作・状態・標準描画を所有する。CPU／Memory／Storage／GPU は `presets/usage/` にまとめ、GPU の複数デバイス・未対応・欠測は専用型で保持する。
+- `src/presets/<integration>/` が取得・操作・状態・標準描画を所有する。CPU／Memory／Storage は `presets/usage/` にまとめる。GPU 固有処理は利用側の独自 Source が所有し、preset に追加しない。
 - 各 `view.rs` は取得済み状態の標準 `IntegrationView` を実装する。render 中に接続・購読・非同期操作を開始しない。操作付きの完成 UI やメニュー開閉状態は利用側が所有する。
 
 ## 実行と外部プロトコル
@@ -31,5 +31,5 @@ mise x -- cargo clippy -p bkss-integration --all-targets --all-features -- -D wa
 
 - D-Bus の protocol test は private bus を起動するため、実サービスへの接続は不要。`dbus-daemon` は Wi-Fi・Bluetooth・tray の試験で必須で、通知の試験だけは未導入時に skip する。
 - ビルドには `libpulse`／`libudev` の開発用ライブラリと `pkg-config` が必要。backlight の実操作には sysfs の書き込み権限が必要で、テストのためにユーザーの実機設定を変更しない。
-- GPU の公開テストは descriptor 構築の確認であり、実機の計測を検証しない。private bus・合成 sysfs・headless GPUI の成功を実機対応済みの根拠にしない。
+- private bus・合成 sysfs・headless GPUI の成功を実機対応済みの根拠にしない。
 - root の Lefthook は core／ui の設定だけを読むため、この crate の検証を hook 任せにしない。

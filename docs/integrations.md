@@ -18,7 +18,6 @@
 | `Audio::new()` | PulseAudio または PipeWire-Pulse の出力・入力 |
 | `Tray::new()` | StatusNotifier のホストと DBusMenu |
 | `Notifications::new()` | freedesktop 通知サーバー |
-| `GpuSource::new()` | DRM sysfs の GPU 情報。計測は AMD を対象とする |
 
 宣言だけでは接続しません。同じ runtime 内で同じ型と key を持つ source は、最初の mount で開始され、その後の mount と共有されます。
 
@@ -121,8 +120,7 @@ BlueZ のエージェントは BKSS から開始する操作用であり、自�
 - 各 source に対応するシステム／セッションサービスが必要です。認証や操作には polkit 等のシステム側の許可が必要になる場合があります。
 - 音声のビルド・リンクには `libpulse`、デバイス監視には `libudev` の開発用環境が必要です。
 - バックライト変更は sysfs の書き込み権限に従います。BKSS は権限昇格や外部の特権コマンド実行を行いません。
-- GPU の未対応ベンダーや欠測項目は、対応状態や `Option` で区別します。未取得を架空の 0% として扱いません。
-- 使用量と GPU は内部サンプリングを用います。時計は指定精度の時刻境界で更新します。
+- 使用量は内部サンプリングを用います。時計は指定精度の時刻境界で更新します。
 - source の接続・購読失敗は Shell 全体の fatal error とし、runtime が resource と Surface を終了します。通常の操作失敗とハードウェアの不在は区別します。
 
 ## 自作 integration とモジュール
@@ -133,4 +131,4 @@ BlueZ のエージェントは BKSS から開始する操作用であり、自�
 
 ライブラリ内部は `src/base/` に共通契約、`src/presets/<integration>/` に各連携を配置しています。`mod.rs` は module 宣言と再エクスポート専用です。単体テストは対象実装ファイル内、公開 API の統合テストは crate 直下の `tests/` に配置します。
 
-使用量の取得処理は `src/presets/usage/{cpu,memory,storage,gpu}/` にまとめています。公開する `UsageSource` と `GpuSource` は共通の Source／worker 基盤を利用しますが、GPU 固有の複数デバイス・欠測情報は専用の状態型で維持します。
+使用量の取得処理は `src/presets/usage/{cpu,memory,storage}/` にまとめています。GPU 固有の取得・デバイス型・ツール連携は preset として提供せず、利用側が独自 Source として実装します。

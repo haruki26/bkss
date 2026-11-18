@@ -34,9 +34,7 @@ pub use tray::{
     Tray, TrayError, TrayIcon, TrayItem, TrayItemId, TrayMenu, TrayMenuItem, TrayOperation,
     TrayState, TrayStatus, TrayToggleState, TrayToolTip,
 };
-pub use usage::{
-    Gpu, GpuError, GpuMetrics, GpuSource, GpuState, GpuSupport, Usage, UsageKind, UsageSource,
-};
+pub use usage::{Usage, UsageKind, UsageSource};
 pub use wifi::{
     Wifi, WifiAccessPoint, WifiAuthContext, WifiAuthRequest, WifiCredentialField, WifiCredentials,
     WifiDevice, WifiDeviceState, WifiError, WifiOperations, WifiSavedConnection, WifiSecurity,
