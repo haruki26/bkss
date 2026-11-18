@@ -5,6 +5,7 @@ use zbus::{
     Connection, Proxy,
     fdo::{self, DBusProxy},
     proxy::SignalStream,
+    zvariant::OwnedValue,
 };
 
 use super::{
@@ -151,7 +152,19 @@ pub(super) async fn read_item(
     .await?;
     let mut item = TrayItem::new(id.clone(), actions.clone());
     item.title = proxy.get_property("Title").await?;
-    item.icon_name = proxy.get_property("IconName").await?;
+    let properties = Proxy::new(
+        connection,
+        id.owner.as_str(),
+        id.path.as_str(),
+        "org.freedesktop.DBus.Properties",
+    )
+    .await?;
+    let mut main_icon: std::collections::HashMap<String, OwnedValue> =
+        properties.call("GetAll", &ITEM_INTERFACE).await?;
+    item.icon_name = optional_icon_property(&mut main_icon, "IconName")?.unwrap_or_default();
+    item.icon = decode_icon(
+        &optional_icon_property::<IconPixmaps>(&mut main_icon, "IconPixmap")?.unwrap_or_default(),
+    )?;
     item.attention_icon_name = optional_property(&proxy, "AttentionIconName")
         .await?
         .unwrap_or_default();
@@ -175,7 +188,6 @@ pub(super) async fn read_item(
         "NeedsAttention" => TrayStatus::NeedsAttention,
         _ => TrayStatus::Unknown,
     };
-    item.icon = decode_icon(&proxy.get_property::<IconPixmaps>("IconPixmap").await?)?;
     let (icon_name, tooltip_pixmaps, title, description): ToolTipProperty =
         proxy.get_property("ToolTip").await?;
     for text in [
@@ -250,6 +262,21 @@ pub(super) async fn normalize_id(
     }))
 }
 
+fn optional_icon_property<T>(
+    properties: &mut std::collections::HashMap<String, OwnedValue>,
+    name: &str,
+) -> Result<Option<T>, TrayError>
+where
+    T: TryFrom<OwnedValue>,
+{
+    properties
+        .remove(name)
+        .map(|value| {
+            T::try_from(value).map_err(|_| TrayError::Protocol("invalid main icon property type"))
+        })
+        .transpose()
+}
+
 async fn optional_property<T>(proxy: &Proxy<'_>, name: &str) -> Result<Option<T>, TrayError>
 where
     T: TryFrom<zbus::zvariant::OwnedValue>,
@@ -313,6 +340,34 @@ fn decode_icon(pixmaps: &[IconPixmap]) -> Result<Option<TrayIcon>, TrayError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn main_icon_properties_accept_missing_alternates_but_reject_wrong_types() {
+        let mut properties = std::collections::HashMap::from([(
+            "IconName".to_owned(),
+            OwnedValue::try_from(zbus::zvariant::Value::from("fixture-icon"))
+                .expect("string converts to an owned D-Bus value"),
+        )]);
+        assert_eq!(
+            optional_icon_property::<String>(&mut properties, "IconName").expect("valid name"),
+            Some("fixture-icon".to_owned())
+        );
+        assert_eq!(
+            optional_icon_property::<IconPixmaps>(&mut properties, "IconPixmap")
+                .expect("missing pixmap is allowed"),
+            None
+        );
+        assert!(matches!(
+            optional_icon_property::<String>(
+                &mut std::collections::HashMap::from([(
+                    "IconName".to_owned(),
+                    OwnedValue::from(42_u32),
+                )]),
+                "IconName"
+            ),
+            Err(TrayError::Protocol(_))
+        ));
+    }
 
     #[test]
     fn argb_icon_pixels_are_bounded_and_converted_to_rgba() {

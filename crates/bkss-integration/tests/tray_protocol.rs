@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread,
     time::{Duration, Instant},
@@ -114,7 +114,10 @@ fn one_item(state: &TrayState) -> &bkss_integration::TrayItem {
 #[derive(Clone)]
 struct FakeItem {
     status: Arc<Mutex<String>>,
+    icon_name: Arc<Mutex<String>>,
     icon: Arc<Mutex<TrayIconPixmaps>>,
+    fail_icon_name: Arc<AtomicBool>,
+    fail_icon_pixmap: Arc<AtomicBool>,
     attention: Arc<Mutex<TrayIconPixmaps>>,
     overlay: Arc<Mutex<TrayIconPixmaps>>,
     menu: OwnedObjectPath,
@@ -124,7 +127,10 @@ impl Default for FakeItem {
     fn default() -> Self {
         Self {
             status: Arc::new(Mutex::new("Active".into())),
+            icon_name: Arc::new(Mutex::new("fixture-icon-name".into())),
             icon: Arc::new(Mutex::new(vec![(1, 1, vec![255, 10, 20, 30])])),
+            fail_icon_name: Arc::new(AtomicBool::new(false)),
+            fail_icon_pixmap: Arc::new(AtomicBool::new(false)),
             attention: Arc::new(Mutex::new(vec![(1, 1, vec![255, 1, 2, 3])])),
             overlay: Arc::new(Mutex::new(vec![(1, 1, vec![128, 4, 5, 6])])),
             menu: OwnedObjectPath::try_from(MENU_PATH).expect("valid menu path"),
@@ -152,8 +158,13 @@ impl FakeItem {
     }
 
     #[zbus(property)]
-    fn icon_name(&self) -> String {
-        "fixture-icon-name".into()
+    fn icon_name(&self) -> zbus::fdo::Result<String> {
+        if self.fail_icon_name.load(Ordering::Acquire) {
+            return Err(zbus::fdo::Error::Failed(
+                "fixture property read failed".into(),
+            ));
+        }
+        Ok(clone_locked(&self.icon_name))
     }
 
     #[zbus(property)]
@@ -167,8 +178,13 @@ impl FakeItem {
     }
 
     #[zbus(property)]
-    fn icon_pixmap(&self) -> TrayIconPixmaps {
-        clone_locked(&self.icon)
+    fn icon_pixmap(&self) -> zbus::fdo::Result<TrayIconPixmaps> {
+        if self.fail_icon_pixmap.load(Ordering::Acquire) {
+            return Err(zbus::fdo::Error::Failed(
+                "fixture property read failed".into(),
+            ));
+        }
+        Ok(clone_locked(&self.icon))
     }
 
     #[zbus(property)]
@@ -305,6 +321,79 @@ async fn export_item(connection: &Connection) -> (FakeItem, FakeMenu) {
         RequestNameReply::PrimaryOwner
     );
     (item, menu)
+}
+
+#[test]
+fn main_icon_get_failures_use_the_available_get_all_alternate() {
+    for failed_property in ["IconName", "IconPixmap", "neither"] {
+        let bus = PrivateBus::start().expect("start private dbus-daemon");
+        bounded(async {
+            let cx = TestAppContext::single();
+            let scope = cx.update(ResourceScope::new);
+            let lease = cx.update(|cx| {
+                scope
+                    .acquire(&Tray::with_address(bus.address.clone()), cx)
+                    .expect("mount tray source")
+            });
+            let reactive = lease.reactive();
+            wait_for(&cx, &reactive, |state| state.items.is_empty());
+
+            let item_connection = bus.connect().await.expect("connect fixture item");
+            let (fake_item, _menu) = export_item(&item_connection).await;
+            match failed_property {
+                "IconName" => {
+                    *fake_item
+                        .icon_name
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = String::new();
+                    fake_item.fail_icon_name.store(true, Ordering::Release);
+                }
+                "IconPixmap" => {
+                    fake_item.fail_icon_pixmap.store(true, Ordering::Release);
+                }
+                _ => {
+                    *fake_item
+                        .icon_name
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = String::new();
+                    *fake_item
+                        .icon
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = Vec::new();
+                }
+            }
+            let watcher = Proxy::new(&item_connection, WATCHER, WATCHER_PATH, WATCHER_IFACE)
+                .await
+                .expect("local watcher proxy");
+            watcher
+                .call::<_, _, ()>("RegisterStatusNotifierItem", &ITEM_PATH)
+                .await
+                .expect("register icon fixture");
+
+            let snapshot = wait_for(&cx, &reactive, |state| state.items.len() == 1);
+            let item = one_item(&snapshot);
+            match failed_property {
+                "IconName" => {
+                    assert_eq!(
+                        item.icon.as_ref().expect("GetAll pixmap alternate").rgba,
+                        [10, 20, 30, 255]
+                    );
+                    assert!(item.icon_name.is_empty());
+                }
+                "IconPixmap" => {
+                    assert_eq!(item.icon_name, "fixture-icon-name");
+                    assert!(item.icon.is_none());
+                }
+                _ => {
+                    assert!(item.icon_name.is_empty());
+                    assert!(item.icon.is_none());
+                }
+            }
+
+            drop(lease);
+            cx.run_until_parked();
+        });
+    }
 }
 
 #[derive(Clone, Default)]

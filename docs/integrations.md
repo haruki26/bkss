@@ -60,7 +60,7 @@ pub trait IntegrationView {
 
 `Notifications::new()` と `with_address()` は、送信側の `expire_timeout = -1` に既定の 10 秒を適用します。`Notifications::with_default_timeout(endpoint, timeout)` ではこの既定期限を指定できます。`NotificationsEndpoint::Session` と `Duration::ZERO` を指定すると、期限をサーバーに委ねた通知は自動終了しません。送信側が明示した正の期限は引き続き適用し、明示的な 0 は無期限です。endpoint と既定期限が一致する source だけが activation を共有します。ポップアップを隠す時刻は、この通知本体の期限とは別に利用側で管理してください。
 
-tray は既存 watcher があればホストとして参加し、なければ置き換えなしで watcher を開始します。アイコンの画像データ・名前、状態、メニュー情報と操作 API を公開します。アイコン描画・テーマ名の解決・メニューの表示は利用側で実装してください。アイコン名を無条件にファイルパスとして扱わないでください。SNI 操作に渡す座標は利用側で指定します。
+tray は既存 watcher があればホストとして参加し、なければ置き換えなしで watcher を開始します。メインアイコンの名前と画像データは `Properties.GetAll` の snapshot から取得し、片方が欠けていてももう片方を保持します。両方空でも項目を保持します。アイコンの画像データ・名前、状態、メニュー情報と操作 API を公開します。アイコン描画・テーマ名の解決・メニューの表示は利用側で実装してください。アイコン名を無条件にファイルパスとして扱わないでください。SNI 操作に渡す座標は利用側で指定します。
 
 コンパイル対象の [`source_display.rs`](../crates/bkss-ui/examples/source_display.rs) は、時計と自作 Source、アイコン＋値、描画差し替えを示します。
 
