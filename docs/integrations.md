@@ -76,6 +76,36 @@ operation.await?;
 
 Hyprland の workspace 切り替えには `Hyprland::switch_workspace(socket_dir, "2")?.await?` を使います。
 
+## 外部プロセスからの command IPC
+
+利用側が所有する有限のコマンド名を Unix socket で受け取る source と client を提供します。登録した名前だけを受け付け、任意のプロセス実行や UI 操作は行いません。
+
+```rust
+let descriptor = CommandIpc::new(
+    runtime_dir,
+    "powermenu.sock",
+    ["open", "shutdown"],
+)?;
+// mount 後、Ready の CommandIpcState を取得
+let request = state.next_request().await;
+if let Some(request) = request {
+    let command = request.command();
+    let payload = request.payload();
+    // 利用側が処理してから明示的に返答
+    request.respond(b"handled".to_vec())?;
+}
+```
+
+`CommandIpcClient::send(socket_path, command, payload)` は同期 API なので UI thread ではなく worker から呼びます。`runtime_dir` は絶対パスの、現在のユーザー所有かつ mode `0700` の既存ディレクトリである必要があります。socket は mode `0600` で作成されます。
+
+source は `<socket_path>.lock` の排他を稼働中保持します。lockfile は空の自己所有通常ファイルで mode `0600` とし、終了後も削除しません。稼働中に手動削除すると排他が別の inode に分かれるため、削除しないでください。
+
+既存 endpoint は、自己所有・mode `0600` の Unix socket で、時間制限付き接続確認が接続拒否となり、検査時と同じ device・inode の場合だけ回収します。稼働中の listener、通常ファイル、symlink、不正な所有・権限、差し替えられた endpoint は削除しません。確認のタイムアウトや取消も、既存 endpoint を保持したまま失敗します。
+
+runtime directory の検証と socket の bind は source worker が行い、成功後に初期 `Ready` を publish します。起動時の失敗は source failure として runtime に伝わります。
+
+コマンド名は ASCII の英数字・`-`・`_`・`.` からなる最大 128 bytes で、request/response payload の上限は各 64 KiB、応答待ちは 2 秒です。未知名・不正 request・満杯は拒否されます。IPC の成功応答は、要求が利用側へ届けられ応答を受けたことだけを示し、UI 処理の実行や成功を保証しません。
+
 ## 認証
 
 Wi-Fi は `WifiState::next_auth_request().await` から要求を受け取り、要求の `responder` に `WifiCredentials` を渡します。入力値には move-only の `Secret<String>` を使用します。Bluetooth は状態の型付き Agent1 要求に応じ、PIN、passkey、確認・許可への応答を渡します。

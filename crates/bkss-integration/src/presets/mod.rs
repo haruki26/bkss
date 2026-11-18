@@ -3,6 +3,7 @@ mod backlight;
 mod battery;
 mod bluetooth;
 mod clock;
+mod command_ipc;
 mod hyprland;
 mod notifications;
 mod tray;
@@ -22,6 +23,7 @@ pub use bluetooth::{
     ConfirmationAnswer, PasskeyAnswer, PinCodeAnswer,
 };
 pub use clock::{Clock, ClockPrecision, ClockState};
+pub use command_ipc::{CommandIpc, CommandIpcClient, CommandIpcRequest, CommandIpcState};
 pub use hyprland::{
     ActiveWindow, Hyprland, HyprlandError, HyprlandState, Workspace, WorkspaceSwitch,
 };
