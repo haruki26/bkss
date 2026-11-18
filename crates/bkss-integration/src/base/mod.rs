@@ -6,4 +6,4 @@ pub(crate) mod worker;
 pub use auth::{RespondError, Responder, Secret};
 pub use command::{DispatchError, Operation, OperationError};
 pub use view::IntegrationView;
-pub use worker::WorkerGuard;
+pub use worker::{Cancellation, WorkerGuard, spawn_worker};

@@ -10,7 +10,7 @@ use std::{
 /// Dropping the worker guard closes every clone's receiver. Async setup and
 /// backend calls should race their future against [`Cancellation::cancelled`].
 #[derive(Clone)]
-pub(crate) struct Cancellation {
+pub struct Cancellation {
     receiver: async_channel::Receiver<()>,
 }
 
@@ -21,12 +21,12 @@ pub(crate) fn cancellation_channel() -> (async_channel::Sender<()>, Cancellation
 
 impl Cancellation {
     /// Returns whether shutdown has been requested.
-    pub(crate) fn is_cancelled(&self) -> bool {
+    pub fn is_cancelled(&self) -> bool {
         self.receiver.is_closed()
     }
 
     /// Completes when the worker guard requests shutdown.
-    pub(crate) async fn cancelled(&self) {
+    pub async fn cancelled(&self) {
         let _ = self.receiver.recv().await;
     }
 }
@@ -48,10 +48,15 @@ impl Drop for WorkerGuard {
 
 /// Starts a worker while retaining the UI bridge and cancellation lifetime.
 ///
-/// The worker is detached on guard drop; cancellation does not join it or wait
-/// for backend I/O. Async operations must be raced against the provided token
-/// to prevent a blocked call from retaining backend resources indefinitely.
-pub(crate) fn spawn_worker<P, E>(
+/// Call this from `Source::start` after creating the publisher bridge. The
+/// worker starts immediately, so backend setup, registration, and initial
+/// retrieval belong in `run`, not on the UI thread.
+///
+/// Dropping the returned guard closes UI delivery and requests cancellation.
+/// The worker is detached: drop does not join it or wait for backend I/O.
+/// Async operations and waits must be raced against the provided token to
+/// avoid retaining backend resources indefinitely.
+pub fn spawn_worker<P, E>(
     name: &'static str,
     bridge: ThreadPublisherGuard,
     publisher: ThreadPublisher<P, E>,

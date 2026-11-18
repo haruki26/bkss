@@ -99,6 +99,8 @@ BlueZ のエージェントは BKSS から開始する操作用であり、自�
 
 自作の取得処理は公開 `Source` を実装します。標準表示が必要なら、その `Value` に `IntegrationView` を実装してください。別 thread からの更新には `SourcePublisher::thread_bridge` を利用できます。
 
+`bkss_integration::base::{spawn_worker, Cancellation, WorkerGuard}` は独自 Source でも使える共通の worker 基盤です。`Source::start` で作った bridge と publisher を `spawn_worker` に渡し、返された guard を Source の lifetime に保持します。guard の Drop は UI 配送を閉じて停止を要求するだけで、worker の join や I/O 完了を待ちません。worker の非同期待機は `Cancellation::cancelled()` と race させ、`is_cancelled()` で停止を確認します。独自の取得処理が作った子プロセスや接続は、その worker 側で回収してください。
+
 ライブラリ内部は `src/base/` に共通契約、`src/presets/<integration>/` に各連携を配置しています。`mod.rs` は module 宣言と再エクスポート専用です。単体テストは対象実装ファイル内、公開 API の統合テストは crate 直下の `tests/` に配置します。
 
 使用量の取得処理は `src/presets/usage/{cpu,memory,storage,gpu}/` にまとめています。公開する `UsageSource` と `GpuSource` は共通の Source／worker 基盤を利用しますが、GPU 固有の複数デバイス・欠測情報は専用の状態型で維持します。
