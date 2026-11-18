@@ -301,6 +301,12 @@ impl Overlay {
         self
     }
 
+    /// Sets native layer-shell margins without changing the surface viewport.
+    pub fn margin(mut self, margin: Edges<Pixels>) -> Self {
+        self.0.options.margin = Some((margin.top, margin.right, margin.bottom, margin.left));
+        self
+    }
+
     pub fn exclusive_edge(mut self, edge: Anchor) -> Self {
         self.0 = self.0.exclusive_edge(edge);
         self
@@ -527,9 +533,16 @@ mod tests {
 
     #[test]
     fn overlay_native_configuration_is_explicit_and_independent_of_content_style() {
+        let margin = Edges {
+            top: px(12.),
+            right: px(12.),
+            bottom: px(0.),
+            left: px(0.),
+        };
         let overlay = Overlay::new()
             .anchor(Anchor::TOP | Anchor::RIGHT)
             .surface_size(size(px(320.), px(240.)))
+            .margin(margin)
             .exclusive_edge(Anchor::TOP)
             .exclusive_zone(px(-1.))
             .w(px(900.))
@@ -537,6 +550,10 @@ mod tests {
         let config = overlay.0.config().unwrap();
         assert_eq!(config.size, size(px(320.), px(240.)));
         assert_eq!(config.options.anchor, Anchor::TOP | Anchor::RIGHT);
+        assert_eq!(
+            config.options.margin,
+            Some((px(12.), px(12.), px(0.), px(0.)))
+        );
         assert_eq!(config.options.exclusive_edge, Some(Anchor::TOP));
         assert_eq!(config.options.exclusive_zone, Some(px(-1.)));
         assert!(!overlay.0.visible);
