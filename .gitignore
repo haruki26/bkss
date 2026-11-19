@@ -1,4 +1,8 @@
 /target
+/settings.json
+/crates/shell/settings.json
+/crates/shell/config/
+/config/
 
 # Editor settings
 .zed

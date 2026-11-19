@@ -2,6 +2,8 @@
 
 BKSS は Rust と GPUI を使い、Hyprland 向けのシェルを組み立てるためのライブラリです。`bkss-core` は Glass、runtime、reactive/resource、Surface、animation の実行機構を担います。`bkss-ui` は GPUI を拡張する宣言的 SDK で、公開範囲を **Shell・Effects・Animation** に絞ります。layout や汎用 widget は GPUI をそのまま利用し、ガラスの背景効果には Hyprglass を使用します。
 
+完成したデスクトップアプリケーションは [`crates/shell`](crates/shell/README.md) にあります。ビルドは workspace root から `mise x -- cargo build --release -p shell --bin shell`、実行ファイルは `target/release/shell` です。必要なシステムライブラリ・フォント・起動設定はアプリケーションの README を参照してください。
+
 ## 主な機能と使い方
 
 以下は現在の公開 API に基づく概要です。挙動と受け入れ条件は [foundation 仕様](docs/spec.md)、利用例は各 crate の `examples/` を参照してください。機能の実装と、各 display・scale・compositor 構成での実機検証は別です。
@@ -86,3 +88,7 @@ Exit 完了までは同じ Surface・content・resource lease を保持し、途
 - [遅延 source と fallback 表示](crates/bkss-ui/examples/source_fallback_display.rs)
 
 各 example の存在は、すべての compositor・display 構成での実機受け入れ完了を意味しません。
+
+## ライセンス
+
+BKSS 自身のコードは [MIT License](LICENSE) で提供します。依存ライブラリとシステムフォントには、それぞれのライセンスが適用されます。[第三者依存と配布上の注意](docs/third-party-licenses.md)を参照してください。

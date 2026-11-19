@@ -13,10 +13,11 @@ BKSS は Rust と GPUI で Linux Wayland 向けシェルを組み立てるライ
 
 ## Workspace の構成と責務
 
-- Rust 2024 edition の Cargo workspace とし、`crates/bkss-core`、`crates/bkss-integration`、`crates/bkss-ui` で構成します。
+- Rust 2024 edition の Cargo workspace とし、`crates/bkss-core`、`crates/bkss-integration`、`crates/bkss-ui` とアプリケーションの `crates/shell` で構成します。
 - `bkss-core` は Glass の style・reactive 更新・GPUI 描画、runtime、reactive/resource、低レベルの Surface と lifecycle、animation の実行機構を担います。
 - `bkss-integration` は core の Source 契約を実装し、外部情報の取得・操作と、取得済み状態の標準 GPUI 描画契約を担います。UI crate には依存しません。
 - `bkss-ui` の公開範囲は Shell、Effects、Animation です。Surface 宣言と登録、Glass の公開 UI API、Transition の定義と sample の描画反映を担います。
+- `shell` は SDK を利用する Hyprland 向けデスクトップアプリケーションです。固有の UI・設定・GPU Source を所有し、SDK crate からは依存しません。
 - `bkss-ui → bkss-core`、`bkss-integration → bkss-core` の依存方向を守り、core から上位層への依存や循環依存を作りません。
 - 外部 IPC や特定 integration を core に持ち込まず、外部 backend の取得・操作や compositor 通信を UI に実装しません。backend の詳細はそれを所有する層の境界内に置きます。
 - crate 固有のモジュール構成や実装上の注意は、その crate 内の `AGENTS.md` に記載してください。workspace 全体の設計方針は本書に集約します。

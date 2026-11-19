@@ -1,6 +1,9 @@
 [workspace]
 resolver = "2"
-members = ["crates/bkss-core", "crates/bkss-ui", "crates/bkss-integration"]
+members = ["crates/bkss-core", "crates/bkss-ui", "crates/bkss-integration", "crates/shell"]
+
+[workspace.package]
+license = "MIT"
 
 [workspace.dependencies]
 async-channel = "2.5.0"

@@ -1,0 +1,98 @@
+[
+  {
+    "period": {
+      "duration": 29.930194,
+      "unit": "ms"
+    },
+    "engines": {
+      "Render/3D": {
+        "busy": 11.943417,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "Blitter": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "Video": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "VideoEnhance": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      }
+    }
+  },
+  {
+    "period": {
+      "duration": 510.865686,
+      "unit": "ms"
+    },
+    "engines": {
+      "Render/3D": {
+        "busy": 4.939073,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "Blitter": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "Video": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "VideoEnhance": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      }
+    }
+  },
+  {
+    "period": {
+      "duration": 527.487411,
+      "unit": "ms"
+    },
+    "engines": {
+      "Render/3D": {
+        "busy": 2.284869,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "Blitter": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "Video": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      },
+      "VideoEnhance": {
+        "busy": 0.0,
+        "sema": 0.0,
+        "wait": 0.0,
+        "unit": "%"
+      }
+    }
+  }
+]
