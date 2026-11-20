@@ -12,18 +12,12 @@ use bkss_integration::{CommandIpcClient, Hyprland, WorkspaceSwitch};
 
 pub struct Actions {
     hyprland_socket_dir: std::path::PathBuf,
-    powermenu_socket: std::path::PathBuf,
 }
 
 impl Actions {
-    pub fn new(
-        hyprland_socket_dir: std::path::PathBuf,
-        powermenu_socket: std::path::PathBuf,
-    ) -> Self {
-        debug_assert!(powermenu_socket.is_absolute());
+    pub fn new(hyprland_socket_dir: std::path::PathBuf) -> Self {
         Self {
             hyprland_socket_dir,
-            powermenu_socket,
         }
     }
 
@@ -39,21 +33,20 @@ impl Actions {
         spawn_action(|| checked_command("systemctl", &["poweroff"]))
     }
 
-    pub fn toggle_powermenu(&self) -> ActionResult {
-        let socket = self.powermenu_socket.clone();
-        spawn_action(move || {
-            let response = CommandIpcClient::send(socket, "toggle", b"powermenu")?;
-            if response == b"ok" {
-                Ok(())
-            } else {
-                Err(io::Error::other("power-menu IPC rejected the command"))
-            }
-        })
-    }
-
     pub fn switch_workspace(&self, workspace: &str) -> Result<WorkspaceSwitch, std::io::Error> {
         Hyprland::switch_workspace(&self.hyprland_socket_dir, workspace)
     }
+}
+
+pub(crate) fn toggle_powermenu(socket: std::path::PathBuf) -> ActionResult {
+    spawn_action(move || {
+        let response = CommandIpcClient::send(socket, "toggle", b"powermenu")?;
+        if response == b"ok" {
+            Ok(())
+        } else {
+            Err(io::Error::other("power-menu IPC rejected the command"))
+        }
+    })
 }
 
 pub type ActionResult = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;

@@ -12,10 +12,11 @@ use bkss_integration::{
     Notifications, NotificationsEndpoint, Tray, UsageKind, UsageSource, Wifi,
 };
 
+const POWERMENU_SOCKET: &str = "yshell.sock";
+
 /// Inert source declarations used by the UI; mounting starts their integrations.
 pub struct Services {
     pub hyprland_socket_dir: PathBuf,
-    pub powermenu_socket: PathBuf,
     pub clock: SourceDescriptor<Clock>,
     pub hyprland: SourceDescriptor<Hyprland>,
     pub cpu: SourceDescriptor<UsageSource>,
@@ -55,11 +56,9 @@ impl Services {
             ));
         }
         let socket_dir = runtime_dir.join("hypr").join(signature);
-        let powermenu_socket = runtime_dir.join("yshell.sock");
 
         Ok(Self {
             hyprland_socket_dir: socket_dir.clone(),
-            powermenu_socket: powermenu_socket.clone(),
             clock: SourceDescriptor::new(Clock::new(ClockPrecision::Second)),
             hyprland: Hyprland::new(socket_dir),
             cpu: UsageSource::new(UsageKind::Cpu),
@@ -76,10 +75,14 @@ impl Services {
                 NotificationsEndpoint::Session,
                 Duration::ZERO,
             ),
-            power_menu_requests: CommandIpc::new(&runtime_dir, "yshell.sock", ["toggle"])?,
+            power_menu_requests: CommandIpc::new(&runtime_dir, POWERMENU_SOCKET, ["toggle"])?,
             weather: WeatherSource::new(),
         })
     }
+}
+
+pub(crate) fn powermenu_socket(runtime_dir: &Path) -> PathBuf {
+    runtime_dir.join(POWERMENU_SOCKET)
 }
 
 pub(crate) fn runtime_dir() -> io::Result<PathBuf> {
