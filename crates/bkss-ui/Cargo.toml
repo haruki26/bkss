@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 bkss-core = { workspace = true }
-bkss-integration = { workspace = true }
 gpui = { workspace = true, features = ["wayland"] }
 
 [dev-dependencies]
+bkss-integration = { workspace = true }
 gpui = { workspace = true, features = ["test-support"] }
