@@ -1,3 +1,4 @@
+/// Selects which system resource the usage source samples.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum UsageKind {
     Cpu,
@@ -5,6 +6,11 @@ pub enum UsageKind {
     Storage,
 }
 
+/// A sampled usage value.
+///
+/// For CPU samples, only `percent` is meaningful: `used` and `total` are
+/// placeholders. For memory and storage, `used` and `total` are measured
+/// quantities in bytes, and `percent` is calculated from them.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Usage {
     pub used: u64,
