@@ -1,4 +1,6 @@
-use super::geometry::{BarGeometry, Geometry, validate_number};
+use super::geometry::{BarGeometry, Geometry};
+#[cfg(test)]
+use super::view::Observation;
 use super::view::SurfaceView;
 use super::{
     Anchor, BarAlignment, KeyboardInteractivity, Layer, Output, Placement, SurfaceConfigError,
@@ -6,14 +8,17 @@ use super::{
 };
 use crate::animation::{SurfaceTransitions, Transition};
 use bkss_core::{
-    AnimationPlan, DisplaySelection, DynamicSurfaceHandle, LayerSurfaceConfig, RuntimeHandle,
-    ShellError, SurfaceInstanceHandle, SurfaceRequestError, WeakRuntimeHandle,
+    AnimationPlan, DisplaySelection, DynamicSurfaceConfigError, DynamicSurfaceHandle,
+    LayerSurfaceConfig, RuntimeHandle, ShellError, SurfaceInstanceHandle, SurfaceRequestError,
+    WeakRuntimeHandle, validate_dynamic_surface_config_for_ui,
 };
 use gpui::{
     App, AppContext, Edges, Entity, Pixels, Render, Size, StyleRefinement, Styled, Window,
     layer_shell::LayerShellOptions, px, size,
 };
 use std::time::Duration;
+#[cfg(test)]
+use std::{cell::Cell, rc::Rc};
 
 /// A reusable inert declaration. Native configuration is fixed when mounted;
 /// `Styled` methods configure a fresh content root, not the native surface.
@@ -28,6 +33,8 @@ pub struct ShellSurface {
     outputs: DisplaySelection,
     visible: bool,
     manual_zone: Option<Pixels>,
+    #[cfg(test)]
+    pub(super) observed: Rc<Cell<Observation>>,
 }
 
 impl Default for ShellSurface {
@@ -53,6 +60,8 @@ impl Default for ShellSurface {
             outputs: DisplaySelection::default(),
             visible: false,
             manual_zone: None,
+            #[cfg(test)]
+            observed: Default::default(),
         }
     }
 }
@@ -169,46 +178,38 @@ impl ShellSurface {
         } else {
             self.native_size
         };
-        if options.anchor.bits() & !Anchor::all().bits() != 0 {
-            return Err(SurfaceConfigError("surface anchors must be screen edges"));
-        }
-        for (dimension, opposing) in [
-            (native_size.width, Anchor::LEFT | Anchor::RIGHT),
-            (native_size.height, Anchor::TOP | Anchor::BOTTOM),
-        ] {
-            validate_number(
-                dimension,
-                px(0.),
-                "surface dimensions must be finite nonnegative logical pixels",
-            )?;
-            if dimension == px(0.) && !options.anchor.contains(opposing) {
-                return Err(SurfaceConfigError(
-                    "a zero surface dimension requires opposing anchors",
-                ));
-            }
-        }
         if let Some(zone) = self.manual_zone {
-            if zone != px(-1.) {
-                validate_number(
-                    zone,
-                    px(0.),
-                    "exclusive zone must be -1 or finite nonnegative representable logical pixels",
-                )?;
-            }
             options.exclusive_zone = Some(zone);
         }
-        if let Some(edge) = options.exclusive_edge
+        let config = LayerSurfaceConfig {
+            size: native_size,
+            options,
+        };
+        validate_dynamic_surface_config_for_ui(&config).map_err(|reason| {
+            SurfaceConfigError(match reason {
+                DynamicSurfaceConfigError::InvalidDimension => {
+                    "surface dimensions must be finite nonnegative logical pixels"
+                }
+                DynamicSurfaceConfigError::ZeroDimensionWithoutOpposingAnchors => {
+                    "a zero surface dimension requires opposing anchors"
+                }
+                DynamicSurfaceConfigError::InvalidExclusiveZone => {
+                    "exclusive zone must be -1 or finite nonnegative representable logical pixels"
+                }
+                DynamicSurfaceConfigError::UnknownAnchorBits => {
+                    "surface anchors must be screen edges"
+                }
+            })
+        })?;
+        if let Some(edge) = config.options.exclusive_edge
             && (![Anchor::TOP, Anchor::BOTTOM, Anchor::LEFT, Anchor::RIGHT].contains(&edge)
-                || !options.anchor.contains(edge))
+                || !config.options.anchor.contains(edge))
         {
             return Err(SurfaceConfigError(
                 "exclusive edge must be one anchored screen edge",
             ));
         }
-        Ok(LayerSurfaceConfig {
-            size: native_size,
-            options,
-        })
+        Ok(config)
     }
 }
 
@@ -463,6 +464,8 @@ impl SurfaceHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bkss_core::Shell;
+    use gpui::{AppContext, TestAppContext};
 
     #[test]
     fn four_bar_edges_fix_allocation_and_reservation_independently_of_content_style() {
@@ -577,14 +580,166 @@ mod tests {
             f32::NEG_INFINITY,
             f32::MAX,
         ] {
-            assert!(Overlay::new().exclusive_zone(px(zone)).0.config().is_err());
-            assert!(
-                Bar::new(Thickness::new(px(40.)).unwrap())
-                    .exclusive_zone(px(zone))
-                    .0
-                    .config()
-                    .is_err()
+            let cx = TestAppContext::single();
+            let runtime = cx.update(|cx| Shell::attach(cx, |_, _| Ok(())).unwrap());
+            let factory_calls = Rc::new(Cell::new(0));
+            let calls = factory_calls.clone();
+            let result = cx.update(|cx| {
+                Overlay::new().exclusive_zone(px(zone)).mount(
+                    &runtime,
+                    move |_, _, _, cx| {
+                        calls.set(calls.get() + 1);
+                        Ok(cx.new(|_| gpui::EmptyView))
+                    },
+                    cx,
+                )
+            });
+            let Err(ShellError::Setup(error)) = result else {
+                panic!("expected core registration validation error");
+            };
+            assert_eq!(
+                error
+                    .downcast_ref::<SurfaceConfigError>()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some(
+                    "exclusive zone must be -1 or finite nonnegative representable logical pixels"
+                )
             );
+            assert_eq!(
+                factory_calls.get(),
+                0,
+                "invalid config must be rejected before factory"
+            );
+            cx.update(|cx| runtime.shutdown(cx));
         }
+    }
+
+    #[test]
+    fn exclusive_edge_remains_single_and_anchored_at_the_registration_boundary() {
+        let cx = TestAppContext::single();
+        let runtime = cx.update(|cx| Shell::attach(cx, |_, _| Ok(())).unwrap());
+        let factory_calls = Rc::new(Cell::new(0));
+        let calls = factory_calls.clone();
+        let result = cx.update(|cx| {
+            Overlay::new()
+                .exclusive_edge(Anchor::TOP | Anchor::BOTTOM)
+                .mount(
+                    &runtime,
+                    move |_, _, _, cx| {
+                        calls.set(calls.get() + 1);
+                        Ok(cx.new(|_| gpui::EmptyView))
+                    },
+                    cx,
+                )
+        });
+        let Err(ShellError::Setup(error)) = result else {
+            panic!("expected UI exclusive-edge validation error");
+        };
+        assert_eq!(
+            error
+                .downcast_ref::<SurfaceConfigError>()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("exclusive edge must be one anchored screen edge")
+        );
+        assert_eq!(factory_calls.get(), 0);
+        cx.update(|cx| runtime.shutdown(cx));
+    }
+
+    #[test]
+    fn shared_native_dimension_validation_runs_at_registration_before_factory() {
+        let cx = TestAppContext::single();
+        let runtime = cx.update(|cx| Shell::attach(cx, |_, _| Ok(())).unwrap());
+        for (definition, expected) in [
+            (
+                ShellSurface::new().surface_size(size(px(-1.), px(20.))),
+                "surface dimensions must be finite nonnegative logical pixels",
+            ),
+            (
+                ShellSurface::new().surface_size(size(px(f32::NAN), px(20.))),
+                "surface dimensions must be finite nonnegative logical pixels",
+            ),
+            (
+                ShellSurface::new()
+                    .anchor(Anchor::TOP | Anchor::LEFT)
+                    .surface_size(size(px(0.), px(20.))),
+                "a zero surface dimension requires opposing anchors",
+            ),
+            (
+                ShellSurface::new().anchor(Anchor::from_bits_retain(1 << 4)),
+                "surface anchors must be screen edges",
+            ),
+        ] {
+            let factory_calls = Rc::new(Cell::new(0));
+            let calls = factory_calls.clone();
+            let result = cx.update(|cx| {
+                definition.mount(
+                    &runtime,
+                    move |_, _, _, cx| {
+                        calls.set(calls.get() + 1);
+                        Ok(cx.new(|_| gpui::EmptyView))
+                    },
+                    cx,
+                )
+            });
+            let Err(ShellError::Setup(error)) = result else {
+                panic!("expected core registration validation error");
+            };
+            assert_eq!(
+                error
+                    .downcast_ref::<SurfaceConfigError>()
+                    .map(ToString::to_string)
+                    .as_deref(),
+                Some(expected)
+            );
+            assert_eq!(factory_calls.get(), 0);
+        }
+        cx.update(|cx| runtime.shutdown(cx));
+    }
+
+    #[test]
+    fn unrelated_setup_errors_keep_their_original_cause() {
+        let cx = TestAppContext::single();
+        let runtime = cx.update(|cx| Shell::attach(cx, |_, _| Ok(())).unwrap());
+        cx.update(|cx| runtime.shutdown(cx));
+
+        let result = cx.update(|cx| {
+            ShellSurface::new().mount(&runtime, |_, _, _, cx| Ok(cx.new(|_| gpui::EmptyView)), cx)
+        });
+        let Err(ShellError::Setup(cause)) = result else {
+            panic!("expected runtime-closed setup error");
+        };
+        assert_eq!(
+            cause.to_string(),
+            "cannot register a surface after runtime shutdown"
+        );
+        assert!(cause.downcast_ref::<SurfaceConfigError>().is_none());
+
+        let factory_calls = Rc::new(Cell::new(0));
+        let calls = factory_calls.clone();
+        let result = cx.update(|cx| {
+            ShellSurface::new()
+                .surface_size(size(px(-1.), px(20.)))
+                .mount(
+                    &runtime,
+                    move |_, _, _, cx| {
+                        calls.set(calls.get() + 1);
+                        Ok(cx.new(|_| gpui::EmptyView))
+                    },
+                    cx,
+                )
+        });
+        let Err(ShellError::Setup(cause)) = result else {
+            panic!("expected config error to precede runtime-closed error");
+        };
+        assert_eq!(
+            cause
+                .downcast_ref::<SurfaceConfigError>()
+                .map(ToString::to_string)
+                .as_deref(),
+            Some("surface dimensions must be finite nonnegative logical pixels")
+        );
+        assert_eq!(factory_calls.get(), 0);
     }
 }

@@ -2,8 +2,8 @@
 
 ## 構成と責務
 
-- `src/lib.rs` は非公開の feature module を宣言し、公開 API を再公開する。
-- feature は `shell`、`effects`、`animation` とする。`shell` は ShellSurface／Bar／Overlay の宣言と登録、`effects` は Glass の公開 UI API、`animation` は Transition／SpringPreset の定義・検証と core の実行記述への変換を担う。
+- `src/lib.rs` は公開 feature module `shell`、`effects`、`animation` と crate root の便利な再公開を提供する。利用者は意図的に `bkss_ui::shell`、`bkss_ui::effects`、`bkss_ui::animation` の各 namespace を使える。
+- `shell` は ShellSurface／Bar／Overlay の宣言と登録、`effects` は Glass の公開 UI API、`animation` は Transition／SpringPreset の定義・検証と core の実行記述への変換を担う。
 - feature 内では宣言・検証・geometry 計算と GPUI 描画・入力の副作用を責務に応じて分ける。内部実装を配置や test の都合で公開しない。
 - `tests/` は公開 API の統合 test、`examples/` は利用例・実環境の動作確認を担う。private な実装の単体 test は対象の実装ファイル内に置く。
 

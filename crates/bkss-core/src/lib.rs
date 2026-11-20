@@ -20,8 +20,9 @@ pub use resource::{
     SourceFailurePhase, SourcePublisher, ThreadPublishError, ThreadPublisher, ThreadPublisherGuard,
 };
 pub use shell::{
-    DynamicSurfaceHandle, MountedBinding, RuntimeHandle, Shell, ShellError, SurfaceInstanceHandle,
-    SurfaceRequestError, WeakRuntimeHandle,
+    DynamicSurfaceConfigError, DynamicSurfaceHandle, MountedBinding, RuntimeHandle, Shell,
+    ShellError, SurfaceInstanceHandle, SurfaceRequestError, WeakRuntimeHandle,
+    validate_dynamic_surface_config_for_ui,
 };
 pub use surface::{
     DEFAULT_DISPLAY_READINESS_TIMEOUT, DisplaySelection, LayerSurfaceConfig,

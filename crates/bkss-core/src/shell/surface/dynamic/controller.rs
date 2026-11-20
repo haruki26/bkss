@@ -70,6 +70,86 @@ pub enum SurfaceRequestError {
     Unavailable,
 }
 
+/// Configuration failure reason used to preserve the UI crate's public setup errors.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DynamicSurfaceConfigError {
+    InvalidDimension,
+    ZeroDimensionWithoutOpposingAnchors,
+    InvalidExclusiveZone,
+    UnknownAnchorBits,
+}
+
+impl fmt::Display for DynamicSurfaceConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::InvalidDimension | Self::ZeroDimensionWithoutOpposingAnchors => {
+                "invalid dynamic layer surface size"
+            }
+            Self::InvalidExclusiveZone => "invalid dynamic layer surface exclusive zone",
+            Self::UnknownAnchorBits => "invalid dynamic layer surface options",
+        })
+    }
+}
+
+impl Error for DynamicSurfaceConfigError {}
+
+fn validate_dynamic_surface_dimensions(
+    config: &LayerSurfaceConfig,
+) -> Result<(), DynamicSurfaceConfigError> {
+    let anchors = config.options.anchor;
+    for (dimension, opposing) in [
+        (
+            config.size.width,
+            anchors.contains(gpui::layer_shell::Anchor::LEFT | gpui::layer_shell::Anchor::RIGHT),
+        ),
+        (
+            config.size.height,
+            anchors.contains(gpui::layer_shell::Anchor::TOP | gpui::layer_shell::Anchor::BOTTOM),
+        ),
+    ] {
+        let value = f32::from(dimension);
+        if !value.is_finite() || value < 0. || f64::from(value) > f64::from(i32::MAX) {
+            return Err(DynamicSurfaceConfigError::InvalidDimension);
+        }
+        if value == 0. && !opposing {
+            return Err(DynamicSurfaceConfigError::ZeroDimensionWithoutOpposingAnchors);
+        }
+    }
+    Ok(())
+}
+
+fn validate_dynamic_surface_exclusive_zone(
+    config: &LayerSurfaceConfig,
+) -> Result<(), DynamicSurfaceConfigError> {
+    if config.options.exclusive_zone.is_some_and(|zone| {
+        let value = f32::from(zone);
+        !value.is_finite() || (value < 0. && value != -1.) || f64::from(value) > f64::from(i32::MAX)
+    }) {
+        return Err(DynamicSurfaceConfigError::InvalidExclusiveZone);
+    }
+    Ok(())
+}
+
+fn validate_dynamic_surface_anchors(
+    config: &LayerSurfaceConfig,
+) -> Result<(), DynamicSurfaceConfigError> {
+    if config.options.anchor.bits() & !gpui::layer_shell::Anchor::all().bits() != 0 {
+        return Err(DynamicSurfaceConfigError::UnknownAnchorBits);
+    }
+    Ok(())
+}
+
+/// Validates native settings for the UI declaration boundary in its historical order.
+#[doc(hidden)]
+pub fn validate_dynamic_surface_config_for_ui(
+    config: &LayerSurfaceConfig,
+) -> Result<(), DynamicSurfaceConfigError> {
+    validate_dynamic_surface_anchors(config)?;
+    validate_dynamic_surface_dimensions(config)?;
+    validate_dynamic_surface_exclusive_zone(config)
+}
+
 impl fmt::Display for SurfaceRequestError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(match self {
@@ -667,42 +747,17 @@ pub(in crate::shell) fn register<V: Render + 'static>(
             crate::shell::runtime::SurfaceRegistrationError::Closed,
         ));
     }
-    let anchors = config.options.anchor;
-    for (dimension, opposing) in [
-        (
-            config.size.width,
-            anchors.contains(gpui::layer_shell::Anchor::LEFT | gpui::layer_shell::Anchor::RIGHT),
-        ),
-        (
-            config.size.height,
-            anchors.contains(gpui::layer_shell::Anchor::TOP | gpui::layer_shell::Anchor::BOTTOM),
-        ),
-    ] {
-        let value = f32::from(dimension);
-        if !value.is_finite()
-            || value < 0.
-            || f64::from(value) > f64::from(i32::MAX)
-            || (value == 0. && !opposing)
-        {
-            return Err(ShellError::setup(std::io::Error::other(
-                "invalid dynamic layer surface size",
-            )));
-        }
-    }
-    if config.options.exclusive_zone.is_some_and(|v| {
-        let value = f32::from(v);
-        !value.is_finite() || (value < 0. && value != -1.) || f64::from(value) > f64::from(i32::MAX)
-    }) {
-        return Err(ShellError::setup(std::io::Error::other(
-            "invalid dynamic layer surface exclusive zone",
-        )));
-    }
+    validate_dynamic_surface_dimensions(&config)
+        .map_err(|reason| ShellError::setup(std::io::Error::other(reason)))?;
+    validate_dynamic_surface_exclusive_zone(&config)
+        .map_err(|reason| ShellError::setup(std::io::Error::other(reason)))?;
     let anchor_bits = gpui::layer_shell::Anchor::all().bits();
-    if config.options.anchor.bits() & !anchor_bits != 0
-        || config
-            .options
-            .exclusive_edge
-            .is_some_and(|edge| edge.bits() & !anchor_bits != 0)
+    validate_dynamic_surface_anchors(&config)
+        .map_err(|reason| ShellError::setup(std::io::Error::other(reason)))?;
+    if config
+        .options
+        .exclusive_edge
+        .is_some_and(|edge| edge.bits() & !anchor_bits != 0)
         || config.options.margin.is_some_and(|margins| {
             [margins.0, margins.1, margins.2, margins.3]
                 .into_iter()
@@ -864,6 +919,79 @@ mod tests {
             size: Size::new(px(width), px(height)),
             options: LayerShellOptions::default(),
         }
+    }
+
+    #[test]
+    fn registration_classifies_ui_shared_config_failures_without_changing_core_io_errors() {
+        use gpui::layer_shell::Anchor;
+
+        let cx = TestAppContext::single();
+        let runtime = cx.update(|cx| Shell::attach(cx, |_, _| Ok(())).unwrap());
+        let cases = [
+            (
+                config(-1., 20.),
+                DynamicSurfaceConfigError::InvalidDimension,
+                "invalid dynamic layer surface size",
+            ),
+            (
+                config(0., 20.),
+                DynamicSurfaceConfigError::ZeroDimensionWithoutOpposingAnchors,
+                "invalid dynamic layer surface size",
+            ),
+            (
+                config(20., 20.),
+                DynamicSurfaceConfigError::InvalidExclusiveZone,
+                "invalid dynamic layer surface exclusive zone",
+            ),
+            (
+                {
+                    let mut config = config(20., 20.);
+                    config.options.anchor = Anchor::from_bits_retain(1 << 4);
+                    config
+                },
+                DynamicSurfaceConfigError::UnknownAnchorBits,
+                "invalid dynamic layer surface options",
+            ),
+        ];
+        let factory_calls = Rc::new(Cell::new(0));
+
+        for (mut config, expected_reason, expected_display) in cases {
+            if expected_reason == DynamicSurfaceConfigError::InvalidExclusiveZone {
+                config.options.exclusive_zone = Some(px(-2.));
+            }
+            if expected_reason == DynamicSurfaceConfigError::ZeroDimensionWithoutOpposingAnchors {
+                config.options.anchor = Anchor::TOP | Anchor::LEFT;
+            }
+            let calls = factory_calls.clone();
+            let result = cx.update(|cx| {
+                runtime.register_dynamic_layer_surface(
+                    config,
+                    Duration::from_secs(5),
+                    move |_, _, cx| {
+                        calls.set(calls.get() + 1);
+                        Ok(cx.new(|_| gpui::EmptyView))
+                    },
+                    cx,
+                )
+            });
+            let Err(crate::ShellError::Setup(cause)) = result else {
+                panic!("expected setup validation error");
+            };
+            let io_error = cause
+                .downcast_ref::<std::io::Error>()
+                .expect("core registration preserves io::Error cause");
+            assert_eq!(io_error.kind(), std::io::ErrorKind::Other);
+            assert_eq!(io_error.to_string(), expected_display);
+            assert_eq!(
+                io_error
+                    .get_ref()
+                    .and_then(|cause| cause.downcast_ref::<DynamicSurfaceConfigError>()),
+                Some(&expected_reason)
+            );
+            assert!(runtime.0.dynamic_surfaces.borrow().is_empty());
+            assert_eq!(factory_calls.get(), 0);
+        }
+        cx.update(|cx| runtime.shutdown(cx));
     }
 
     fn test_animation_plan() -> AnimationPlan {

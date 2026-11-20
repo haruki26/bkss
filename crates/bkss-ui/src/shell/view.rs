@@ -40,6 +40,8 @@ impl<V: Render + 'static> SurfaceView<V> {
         {
             focus.focus(window, cx);
         }
+        #[cfg(test)]
+        let observed = definition.observed.clone();
         Self {
             definition,
             content,
@@ -49,7 +51,7 @@ impl<V: Render + 'static> SurfaceView<V> {
             initialized: Rc::new(Cell::new(false)),
             failed: Rc::new(Cell::new(false)),
             #[cfg(test)]
-            observed: Default::default(),
+            observed,
         }
     }
 }
@@ -151,7 +153,7 @@ struct PaintedContent {
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Default)]
-struct Observation {
+pub(super) struct Observation {
     content: Option<Bounds<Pixels>>,
     input: Option<Bounds<Pixels>>,
     sample: Option<bkss_core::AnimationSample>,
@@ -315,8 +317,8 @@ impl Element for SurfaceLayout {
 mod tests {
     use super::*;
     use crate::Transition;
-    use crate::shell::{Bar, KeyboardInteractivity, Overlay, Thickness};
-    use bkss_core::{DynamicSurfaceHandle, RuntimeHandle, Shell};
+    use crate::shell::{Bar, KeyboardInteractivity, Overlay, SurfaceHandle, Thickness};
+    use bkss_core::{RuntimeHandle, Shell};
     use gpui::{AppContext, Size, TestAppContext, VisualTestContext};
     use std::{cell::RefCell, time::Duration};
 
@@ -366,68 +368,47 @@ mod tests {
         definition: ShellSurface,
         focus_child: bool,
         consume_escape: bool,
-    ) -> (DynamicSurfaceHandle, Rc<RefCell<Vec<Record>>>) {
+    ) -> (SurfaceHandle, Rc<RefCell<Vec<Record>>>) {
         let records = Rc::new(RefCell::new(Vec::new()));
         let captured = records.clone();
+        let observed = definition.observed.clone();
         let handle = cx.update(|cx| {
-            let config = definition.config().unwrap();
-            let animated = definition
-                .transitions
-                .resolve(size(px(1.), px(1.)))
-                .unwrap()
-                != bkss_core::AnimationPlan::default();
-            let factory =
-                move |instance: SurfaceInstanceHandle, window: &mut Window, cx: &mut App| {
-                    let clicks = Rc::new(Cell::new(0));
-                    let keys = Rc::new(Cell::new(0));
-                    let renders = Rc::new(Cell::new(0));
-                    let content = cx.new(|cx| {
-                        let focus = focus_child.then(|| cx.focus_handle());
-                        if let Some(focus) = &focus {
-                            focus.focus(window, cx);
-                        }
-                        Content {
-                            clicks: clicks.clone(),
-                            keys: keys.clone(),
-                            focus,
-                            consume_escape,
-                            renders: renders.clone(),
-                        }
-                    });
-                    let view = cx.new(|cx| {
-                        SurfaceView::new(
-                            definition.clone(),
-                            content,
-                            instance.clone(),
-                            animated,
-                            window,
-                            cx,
-                        )
-                    });
-                    captured.borrow_mut().push(Record {
-                        window: window.window_handle(),
-                        instance,
-                        observed: view.read(cx).observed.clone(),
-                        clicks,
-                        keys,
-                        renders,
-                    });
-                    Ok(view)
-                };
-            if animated {
-                runtime.register_deferred_animated_dynamic_layer_surface(
-                    config,
-                    Duration::from_secs(5),
-                    factory,
+            definition
+                .mount(
+                    runtime,
+                    move |instance, _, window, cx| {
+                        let clicks = Rc::new(Cell::new(0));
+                        let keys = Rc::new(Cell::new(0));
+                        let renders = Rc::new(Cell::new(0));
+                        let content = cx.new(|cx| {
+                            let focus = focus_child.then(|| cx.focus_handle());
+                            if let Some(focus) = &focus {
+                                focus.focus(window, cx);
+                            }
+                            Content {
+                                clicks: clicks.clone(),
+                                keys: keys.clone(),
+                                focus,
+                                consume_escape,
+                                renders: renders.clone(),
+                            }
+                        });
+                        captured.borrow_mut().push(Record {
+                            window: window.window_handle(),
+                            instance,
+                            observed: observed.clone(),
+                            clicks,
+                            keys,
+                            renders,
+                        });
+                        Ok(content)
+                    },
                     cx,
                 )
-            } else {
-                runtime.register_dynamic_layer_surface(config, Duration::from_secs(5), factory, cx)
-            }
-            .unwrap()
+                .unwrap()
         });
         let output = cx.update(|cx| cx.displays()[0].id());
-        cx.update(|cx| handle.open(output, cx).unwrap());
+        cx.update(|cx| handle.show(output, cx).unwrap());
         cx.run_until_parked();
         (handle, records)
     }
@@ -660,7 +641,7 @@ mod tests {
         let output = cx.update(|cx| cx.displays()[0].id());
         for generation in 0..2 {
             if generation != 0 {
-                cx.update(|cx| handle.open(output, cx).unwrap());
+                cx.update(|cx| handle.show(output, cx).unwrap());
                 cx.run_until_parked();
             }
             let captured = records.borrow();
@@ -686,7 +667,7 @@ mod tests {
             visual.update(|window, _| window.refresh());
             cx.run_until_parked();
             assert!(record.renders.get() > 1);
-            cx.update(|cx| handle.close(output, cx).unwrap());
+            cx.update(|cx| handle.hide(output, cx).unwrap());
             cx.executor().advance_clock(Duration::from_millis(100));
             visual.update(|window, cx| window.simulate_next_frame(cx));
             cx.run_until_parked();
