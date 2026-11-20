@@ -328,7 +328,7 @@ pub fn run(services: Services, actions: Actions) -> Result<(), ShellError> {
         // Wayland display discovery can still be empty here; ready bars own panel registration.
         let top = desktop.clone();
         Bar::new(Thickness::new(px(theme::BAR_HEIGHT)).map_err(ShellError::setup)?)
-            .namespace("yshell-top")
+            .namespace("bkss-top")
             .edge(Anchor::TOP)
             .full_length()
             .px_0()
@@ -351,7 +351,7 @@ pub fn run(services: Services, actions: Actions) -> Result<(), ShellError> {
             )?;
         let bottom = desktop.clone();
         Bar::new(Thickness::new(px(theme::BAR_HEIGHT)).map_err(ShellError::setup)?)
-            .namespace("yshell-bottom")
+            .namespace("bkss-bottom")
             .edge(Anchor::BOTTOM)
             .full_length()
             .px_0()
@@ -429,11 +429,11 @@ fn register_panel(
         },
     };
     let namespace = match panel {
-        Panel::Notifications => "yshell-notifications",
-        Panel::Banners => "yshell-banners",
-        Panel::Calendar => "yshell-calendar",
-        Panel::Power => "yshell-power",
-        Panel::Tray => "yshell-tray",
+        Panel::Notifications => "bkss-notifications",
+        Panel::Banners => "bkss-banners",
+        Panel::Calendar => "bkss-calendar",
+        Panel::Power => "bkss-power",
+        Panel::Tray => "bkss-tray",
     };
     let declaration = Overlay::new()
         .namespace(namespace)

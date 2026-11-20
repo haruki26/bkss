@@ -12,7 +12,7 @@ use bkss_integration::{
     Notifications, NotificationsEndpoint, Tray, UsageKind, UsageSource, Wifi,
 };
 
-const POWERMENU_SOCKET: &str = "yshell.sock";
+const POWERMENU_SOCKET: &str = "bkss.sock";
 
 /// Inert source declarations used by the UI; mounting starts their integrations.
 pub struct Services {
@@ -121,7 +121,7 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("clock after epoch")
             .as_nanos();
-        std::env::temp_dir().join(format!("yshell-runtime-{}-{nonce}", std::process::id()))
+        std::env::temp_dir().join(format!("bkss-runtime-{}-{nonce}", std::process::id()))
     }
 
     #[test]

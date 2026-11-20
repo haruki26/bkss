@@ -34,7 +34,7 @@ Hyprland の自動起動には、この checkout の `target/release/shell` の�
 
 再起動するとメモリ上の未読通知は失われる。
 
-強制終了後などに `$XDG_RUNTIME_DIR/yshell.sock` が残った場合は、bkss が所有者・権限・種別と listener 不在を確認して、安全な残存 socket だけを回収する。動作中の socket や通常ファイルは削除しない。排他用の `yshell.sock.lock` は終了後も残る正常なファイルであり、動作中に手動削除しない。
+強制終了後などに `$XDG_RUNTIME_DIR/bkss.sock` が残った場合は、bkss が所有者・権限・種別と listener 不在を確認して、安全な残存 socket だけを回収する。動作中の socket や通常ファイルは削除しない。排他用の `bkss.sock.lock` は終了後も残る正常なファイルであり、動作中に手動削除しない。
 
 実行中のシェルの電源メニューを切り替える。
 
@@ -54,12 +54,12 @@ hg.config({
     subsurfaces = { enabled = false },
 })
 for _, namespace in ipairs({
-    "yshell-top",
-    "yshell-bottom",
-    "yshell-banners",
-    "yshell-calendar",
-    "yshell-power",
-    "yshell-tray",
+    "bkss-top",
+    "bkss-bottom",
+    "bkss-banners",
+    "bkss-calendar",
+    "bkss-power",
+    "bkss-tray",
 }) do
     hg.layer(namespace, {
         preset = "pomme",
@@ -68,11 +68,11 @@ for _, namespace in ipairs({
         live_resample = true,
     })
 end
-hg.layer("yshell-notifications", { exclude = true })
+hg.layer("bkss-notifications", { exclude = true })
 hg.config({ layers = { enabled = true } })
 ```
 
-通常の window と subsurface は対象にしない。通知センターの surface は画面全体を覆うため除外する。既存の layer 設定がある場合は対象を合わせて確認する。自動インストール・reload は行わない。
+通常の window と subsurface は対象にしない。通知センターの surface は画面全体を覆うため除外する。既存の layer 設定を更新する場合は、上記の namespace に合わせる。自動インストール・reload は行わない。
 
 BKSS の example にある `bkss-bottom-bar` は example 専用の名前であり、このシェルの名前とは異なる。通常の半透明描画だけでは、背景のぼかし・屈折が成立したことにはならない。反映後は `hyprctl configerrors`、`hyprctl plugin list`、`hyprctl -j hyprglass status` と実画面を確認する。
 
