@@ -7,7 +7,10 @@ use gpui::{
 
 use super::{
     desktop::{Desktop, Panel, PanelLifetime},
-    theme::{self, DANGER, Icon, button, icon, label, row},
+    feedback,
+    icons::{self, Icon},
+    shared::{button, label, muted, row},
+    theme::{self, DANGER},
 };
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -61,7 +64,7 @@ impl Render for PowerView {
                         "電源メニューを閉じる",
                         move |_, cx| close.close(Panel::Power, display, cx),
                     )
-                    .child(icon(Icon::Close)),
+                    .child(icons::icon(Icon::Close)),
                 ),
         );
         if let Some(choice) = self.confirmation {
@@ -74,7 +77,7 @@ impl Render for PowerView {
                     })
                     .text_size(px(16.)),
                 )
-                .child(theme::muted("保存していない作業がないか確認してください。"))
+                .child(muted("保存していない作業がないか確認してください。"))
                 .child(
                     row()
                         .justify_end()
@@ -137,7 +140,7 @@ impl Render for PowerView {
                         .bg(rgba(0x31324480))
                         .text_color(rgb(DANGER))
                         .text_size(px(11.))
-                        .child(icon(Icon::Power).size(px(24.)))
+                        .child(icons::icon(Icon::Power).size(px(24.)))
                         .child("Shutdown"),
                     )
                     .child(
@@ -154,7 +157,7 @@ impl Render for PowerView {
                         .bg(rgba(0x31324480))
                         .text_color(rgb(theme::ACCENT))
                         .text_size(px(11.))
-                        .child(icon(Icon::Reboot))
+                        .child(icons::icon(Icon::Reboot))
                         .child("Reboot"),
                     )
                     .child(
@@ -169,7 +172,7 @@ impl Render for PowerView {
                         .bg(rgba(0x31324480))
                         .text_color(rgb(theme::SECONDARY))
                         .text_size(px(11.))
-                        .child(icon(Icon::Lock).size(px(24.)))
+                        .child(icons::icon(Icon::Lock).size(px(24.)))
                         .child("Lock"),
                     ),
             );
@@ -196,7 +199,7 @@ impl Render for PowerView {
                     .max_w_full()
                     .p_4()
                     .child(content)
-                    .children(theme::error_banner(&self.desktop.feedback, cx)),
+                    .children(feedback::error_banner(&self.desktop.feedback, cx)),
             )
     }
 }

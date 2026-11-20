@@ -17,14 +17,28 @@ use serde::Deserialize;
 
 use crate::settings::{self, Settings};
 
-const UNKNOWN_ICON: &str = "yh-weather-unknown-symbolic";
 const UPDATE_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WeatherState {
-    pub icon_name: String,
+    pub condition: WeatherCondition,
     pub temperature: String,
     pub status: WeatherStatus,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WeatherCondition {
+    ClearDay,
+    ClearNight,
+    CloudyDay,
+    CloudyNight,
+    ShowerRain,
+    RainDay,
+    RainNight,
+    Thunder,
+    Snow,
+    Fog,
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -38,7 +52,7 @@ pub enum WeatherStatus {
 impl Default for WeatherState {
     fn default() -> Self {
         Self {
-            icon_name: UNKNOWN_ICON.into(),
+            condition: WeatherCondition::Unknown,
             temperature: "--".into(),
             status: WeatherStatus::Loading,
         }
@@ -191,7 +205,7 @@ fn fetch_weather(
         .weather
         .first()
         .ok_or(WeatherError("Weather response has no condition"))?;
-    let icon_name = weather_icon(&weather.icon).to_owned();
+    let condition = weather_condition(&weather.icon);
     let temperature = response
         .main
         .temp
@@ -199,7 +213,7 @@ fn fetch_weather(
         .map(|temperature| format!("{}℃", temperature.round() as i32))
         .ok_or(WeatherError("Weather response has no temperature"))?;
     Ok(WeatherState {
-        icon_name,
+        condition,
         temperature,
         status: WeatherStatus::Ready,
     })
@@ -207,12 +221,12 @@ fn fetch_weather(
 
 #[derive(Deserialize)]
 struct WeatherResponse {
-    weather: Vec<WeatherCondition>,
+    weather: Vec<WeatherResponseCondition>,
     main: WeatherTemperature,
 }
 
 #[derive(Deserialize)]
-struct WeatherCondition {
+struct WeatherResponseCondition {
     icon: String,
 }
 
@@ -221,21 +235,21 @@ struct WeatherTemperature {
     temp: Option<f64>,
 }
 
-fn weather_icon(code: &str) -> &'static str {
+fn weather_condition(code: &str) -> WeatherCondition {
     match code {
-        "01d" => "yh-weather-clear-day-symbolic",
-        "01n" => "yh-weather-clear-night-symbolic",
-        "02d" => "yh-weather-cloudy-day-symbolic",
-        "02n" => "yh-weather-cloudy-night-symbolic",
-        "03d" | "04d" => "yh-weather-cloudy-day-symbolic",
-        "03n" | "04n" => "yh-weather-cloudy-night-symbolic",
-        "09d" | "09n" => "yh-weather-shower-rain-symbolic",
-        "10d" => "yh-weather-rain-day-symbolic",
-        "10n" => "yh-weather-rain-night-symbolic",
-        "11d" | "11n" => "yh-weather-thunder-symbolic",
-        "13d" | "13n" => "yh-weather-snow-symbolic",
-        "50d" | "50n" => "yh-weather-fog-symbolic",
-        _ => UNKNOWN_ICON,
+        "01d" => WeatherCondition::ClearDay,
+        "01n" => WeatherCondition::ClearNight,
+        "02d" => WeatherCondition::CloudyDay,
+        "02n" => WeatherCondition::CloudyNight,
+        "03d" | "04d" => WeatherCondition::CloudyDay,
+        "03n" | "04n" => WeatherCondition::CloudyNight,
+        "09d" | "09n" => WeatherCondition::ShowerRain,
+        "10d" => WeatherCondition::RainDay,
+        "10n" => WeatherCondition::RainNight,
+        "11d" | "11n" => WeatherCondition::Thunder,
+        "13d" | "13n" => WeatherCondition::Snow,
+        "50d" | "50n" => WeatherCondition::Fog,
+        _ => WeatherCondition::Unknown,
     }
 }
 
@@ -451,8 +465,18 @@ mod tests {
 
     #[test]
     fn maps_weather_codes_and_encodes_query_secrets() {
-        assert_eq!(weather_icon("13n"), "yh-weather-snow-symbolic");
-        assert_eq!(weather_icon("unexpected"), UNKNOWN_ICON);
+        assert_eq!(weather_condition("01d"), WeatherCondition::ClearDay);
+        assert_eq!(weather_condition("01n"), WeatherCondition::ClearNight);
+        assert_eq!(weather_condition("02d"), WeatherCondition::CloudyDay);
+        assert_eq!(weather_condition("02n"), WeatherCondition::CloudyNight);
+        assert_eq!(weather_condition("04d"), WeatherCondition::CloudyDay);
+        assert_eq!(weather_condition("09n"), WeatherCondition::ShowerRain);
+        assert_eq!(weather_condition("10d"), WeatherCondition::RainDay);
+        assert_eq!(weather_condition("10n"), WeatherCondition::RainNight);
+        assert_eq!(weather_condition("11d"), WeatherCondition::Thunder);
+        assert_eq!(weather_condition("13n"), WeatherCondition::Snow);
+        assert_eq!(weather_condition("50n"), WeatherCondition::Fog);
+        assert_eq!(weather_condition("unexpected"), WeatherCondition::Unknown);
         assert_eq!(percent_encode("a+b&c"), "a%2Bb%26c");
         assert_eq!(config_escape("a\"b"), "a\\\"b");
     }

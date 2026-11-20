@@ -1,20 +1,25 @@
 use std::{
     collections::{HashMap, HashSet},
     rc::Rc,
+    sync::Arc,
 };
 
 use bkss_core::{ReactiveSubscription, RuntimeHandle, ShellError};
 use bkss_integration::{TrayItem, TrayItemId, TrayMenuItem, TrayState, TrayToggleState};
 use bkss_ui::effects::{GlassState, MountedGlass};
 use gpui::{
-    App, AppContext, Context, DisplayId, Entity, IntoElement, Render, Subscription, Window, div,
-    prelude::*, px, rgb, rgba,
+    App, AppContext, Context, DisplayId, Entity, Image, ImageFormat, IntoElement, Render,
+    Subscription, Window, div, prelude::*, px, rgb, rgba,
 };
 
 use super::{
     desktop::{Desktop, Panel, PanelLifetime},
+    feedback,
+    feedback::Feedback,
+    icons::{self, Icon},
     live::Live,
-    theme::{self, Icon, button, icon, label, row},
+    shared::{button, label, muted, row},
+    theme,
 };
 
 #[derive(Default)]
@@ -93,7 +98,7 @@ fn usable_menu(item: &TrayItem, node: i32) -> bool {
     })
 }
 
-pub fn refresh_menu(item: &TrayItem, node: i32, feedback: &Entity<theme::Feedback>, cx: &mut App) {
+pub fn refresh_menu(item: &TrayItem, node: i32, feedback: &Entity<Feedback>, cx: &mut App) {
     let key = (item.id.clone(), node);
     let generation = feedback.update(cx, |feedback, cx| {
         let generation = feedback
@@ -225,7 +230,7 @@ impl TrayView {
                     });
                     refresh_menu(&action_owner, id, &desktop.feedback, cx);
                 } else {
-                    theme::dispatch(
+                    feedback::dispatch(
                         action_owner.menu_event(id, "clicked", 0),
                         "メニューの操作を実行できません",
                         &desktop.feedback,
@@ -246,7 +251,9 @@ impl TrayView {
             .child(label(if checked { "✓" } else { "" }).w(px(12.)))
             .child(label(text).flex_1().min_w_0().truncate())
             .when(has_children, |view| {
-                view.child(icon(if expanded { Icon::Left } else { Icon::Right }).size(px(12.)))
+                view.child(
+                    icons::icon(if expanded { Icon::Left } else { Icon::Right }).size(px(12.)),
+                )
             });
             rows.push(menu_button.into_any_element());
             if expanded {
@@ -297,7 +304,7 @@ impl Render for TrayView {
                     button("close-tray", "メニューを閉じる", move |_, cx| {
                         close.close(Panel::Tray, display, cx)
                     })
-                    .child(icon(Icon::Close)),
+                    .child(icons::icon(Icon::Close)),
                 ),
         );
         if let Some(item) = item {
@@ -316,13 +323,13 @@ impl Render for TrayView {
             } else {
                 let feedback = self.desktop.feedback.clone();
                 content = content
-                    .child(theme::muted("表示できるメニューはありません"))
+                    .child(muted("表示できるメニューはありません"))
                     .child(
                         button(
                             "tray-native-menu",
                             "アプリケーションのメニューを開く",
                             move |_, cx| {
-                                theme::dispatch(
+                                feedback::dispatch(
                                     item.context_menu(0, 0),
                                     "メニューを開けません",
                                     &feedback,
@@ -334,7 +341,7 @@ impl Render for TrayView {
                     );
             }
         } else {
-            content = content.child(theme::muted("このトレイ項目は終了しました"));
+            content = content.child(muted("このトレイ項目は終了しました"));
         }
         self.desktop.panel_root(Panel::Tray, display, window).child(
             self.glass
@@ -344,10 +351,9 @@ impl Render for TrayView {
                 .p_3()
                 .child(content)
                 .children(
-                    refresh_error
-                        .map(|message| theme::muted(message).text_color(rgb(theme::DANGER))),
+                    refresh_error.map(|message| muted(message).text_color(rgb(theme::DANGER))),
                 )
-                .children(theme::error_banner(&self.desktop.feedback, cx)),
+                .children(feedback::error_banner(&self.desktop.feedback, cx)),
         )
     }
 }
@@ -367,7 +373,7 @@ mod tests {
             path: "/tray".into(),
         };
         let key = (id.clone(), 0);
-        let mut feedback = theme::Feedback {
+        let mut feedback = Feedback {
             error: Some("unrelated operation failure".into()),
             ..Default::default()
         };
@@ -425,5 +431,56 @@ mod tests {
         item.visible = false;
         assert!(!usable_items(&[item]));
         assert!(!usable_items(&[]));
+    }
+}
+
+pub fn tray_image(icon: &bkss_integration::TrayIcon) -> Option<Arc<Image>> {
+    let pixels = icon.width.checked_mul(icon.height)?;
+    if pixels == 0 || pixels > 1024 * 1024 || icon.rgba.len() != pixels as usize * 4 {
+        return None;
+    }
+    // A V4 BMP preserves the alpha channel without another image-codec dependency.
+    let mut bytes = vec![0_u8; 122];
+    bytes[0..2].copy_from_slice(b"BM");
+    bytes[2..6].copy_from_slice(&(122 + pixels * 4).to_le_bytes());
+    bytes[10..14].copy_from_slice(&122_u32.to_le_bytes());
+    bytes[14..18].copy_from_slice(&108_u32.to_le_bytes());
+    bytes[18..22].copy_from_slice(&icon.width.to_le_bytes());
+    bytes[22..26].copy_from_slice(&(-(icon.height as i32)).to_le_bytes());
+    bytes[26..28].copy_from_slice(&1_u16.to_le_bytes());
+    bytes[28..30].copy_from_slice(&32_u16.to_le_bytes());
+    bytes[30..34].copy_from_slice(&3_u32.to_le_bytes());
+    for (offset, mask) in [
+        (54, 0x00ff0000_u32),
+        (58, 0x0000ff00),
+        (62, 0x000000ff),
+        (66, 0xff000000),
+    ] {
+        bytes[offset..offset + 4].copy_from_slice(&mask.to_le_bytes());
+    }
+    bytes[70..74].copy_from_slice(&0x73524742_u32.to_le_bytes());
+    for pixel in icon.rgba.as_chunks::<4>().0 {
+        bytes.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+    }
+    Some(Arc::new(Image::from_bytes(ImageFormat::Bmp, bytes)))
+}
+
+#[cfg(test)]
+mod tray_image_tests {
+    use super::*;
+
+    #[test]
+    fn tray_pixels_keep_alpha_and_reject_bad_dimensions() {
+        let mut icon = bkss_integration::TrayIcon {
+            width: 1,
+            height: 1,
+            rgba: vec![10, 20, 30, 40],
+        };
+        let image = tray_image(&icon).unwrap();
+        assert_eq!(&image.bytes[122..], &[30, 20, 10, 40]);
+        icon.rgba.pop();
+        assert!(tray_image(&icon).is_none());
+        icon.width = u32::MAX;
+        assert!(tray_image(&icon).is_none());
     }
 }

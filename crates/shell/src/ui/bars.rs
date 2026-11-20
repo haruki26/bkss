@@ -14,12 +14,16 @@ use gpui::{
 use super::{
     commands::CommandListener,
     desktop::{Desktop, Panel},
+    feedback,
+    icons::{self, Icon},
     live::Live,
     notifications::NotificationFeed,
-    theme::{self, ACCENT, DATA_FONT, FONT, Icon, MUTED, TEXT, button, divider, icon, label, row},
+    shared::{button, divider, label, row},
+    theme::{self, ACCENT, DATA_FONT, FONT, MUTED, TEXT},
+    tray::tray_image,
     workspace_strip::WorkspaceStrip,
 };
-use crate::sources::{GpuState, WeatherState, WeatherStatus};
+use crate::sources::{GpuState, WeatherCondition, WeatherState, WeatherStatus};
 
 const BAR_VERTICAL_PADDING: f32 = 4.;
 const BAR_CONTROL_HEIGHT: f32 = theme::BAR_HEIGHT - 2. * BAR_VERTICAL_PADDING;
@@ -124,26 +128,22 @@ impl Render for TopBar {
                 audio = audio.child(
                     row()
                         .gap_1()
-                        .child(theme::symbolic(
-                            volume_glyph(mean, muted),
-                            if muted { MUTED } else { ACCENT },
-                            24.,
-                        ))
+                        .child(
+                            volume_glyph(mean, muted)
+                                .render(if muted { MUTED } else { ACCENT }, 24.),
+                        )
                         .when(mean > 0., |view| {
                             view.child(label(format!("{:.0}%", mean * 100.)).text_color(rgb(MUTED)))
                         }),
                 );
             }
             if let Some(source) = state.default_source {
-                audio = audio.child(theme::symbolic(
-                    if source.muted {
-                        "yh-mic-off-symbolic"
-                    } else {
-                        "yh-mic-on-symbolic"
-                    },
-                    if source.muted { MUTED } else { ACCENT },
-                    18.,
-                ));
+                let icon = if source.muted {
+                    Icon::MicOff
+                } else {
+                    Icon::MicOn
+                };
+                audio = audio.child(icon.render(if source.muted { MUTED } else { ACCENT }, 18.));
             }
         }
 
@@ -166,7 +166,7 @@ impl Render for TopBar {
                 };
                 let content = if item.status == TrayStatus::NeedsAttention {
                     let image = item.attention_icon.as_ref().or(item.icon.as_ref());
-                    if let Some(image) = image.and_then(theme::tray_image) {
+                    if let Some(image) = image.and_then(tray_image) {
                         img(image).size(px(18.)).into_any_element()
                     } else {
                         desktop.app_icon(&item.icon_name, 18.)
@@ -174,7 +174,7 @@ impl Render for TopBar {
                 } else {
                     let (source, fallback) = main_tray_icon_sources(
                         desktop.icon_path(&item.icon_name),
-                        item.icon.as_ref().and_then(theme::tray_image),
+                        item.icon.as_ref().and_then(tray_image),
                     );
                     if let Some(source) = source {
                         img(source)
@@ -183,12 +183,12 @@ impl Render for TopBar {
                                 if let Some(image) = &fallback {
                                     img(image.clone()).size(px(18.)).into_any_element()
                                 } else {
-                                    icon(Icon::App).size(px(18.)).into_any_element()
+                                    icons::icon(Icon::App).size(px(18.)).into_any_element()
                                 }
                             })
                             .into_any_element()
                     } else {
-                        icon(Icon::App).size(px(18.)).into_any_element()
+                        icons::icon(Icon::App).size(px(18.)).into_any_element()
                     }
                 };
                 tray = tray.child(
@@ -201,7 +201,7 @@ impl Render for TopBar {
                             if action_item.item_is_menu {
                                 desktop.open_tray(display, action_item.clone(), cx);
                             } else {
-                                theme::dispatch(
+                                feedback::dispatch(
                                     action_item.activate(0, 0),
                                     "トレイを開けません",
                                     &desktop.feedback,
@@ -220,6 +220,12 @@ impl Render for TopBar {
             }
         }
 
+        let wifi_icon = wifi_glyph(strength);
+        let bluetooth_icon = if bluetooth_on {
+            Icon::BluetoothOn
+        } else {
+            Icon::BluetoothOff
+        };
         let right = row().gap_3().flex_shrink_0().child(
             bar_island(self.glass.element(GlassState::default(), cx))
                 .px_2()
@@ -228,8 +234,7 @@ impl Render for TopBar {
                     row()
                         .gap_2()
                         .px_1()
-                        .child(theme::symbolic(
-                            wifi_glyph(strength),
+                        .child(wifi_icon.render(
                             if strength.is_some() {
                                 theme::SECONDARY
                             } else {
@@ -237,12 +242,7 @@ impl Render for TopBar {
                             },
                             24.,
                         ))
-                        .child(theme::symbolic(
-                            if bluetooth_on {
-                                "yh-bluetooth-on-symbolic"
-                            } else {
-                                "yh-bluetooth-off-symbolic"
-                            },
+                        .child(bluetooth_icon.render(
                             if bluetooth_on {
                                 theme::SECONDARY
                             } else {
@@ -259,7 +259,7 @@ impl Render for TopBar {
                         .child(
                             row()
                                 .gap_1()
-                                .child(theme::symbolic("yh-sun-symbolic", ACCENT, 24.))
+                                .child(Icon::Sun.render(ACCENT, 24.))
                                 .child(label(brightness).text_color(rgb(MUTED))),
                         )
                         .child(audio),
@@ -326,40 +326,56 @@ pub(super) fn workspace_target(workspace: &Workspace) -> String {
     }
 }
 
-fn wifi_glyph(strength: Option<u8>) -> &'static str {
+fn wifi_glyph(strength: Option<u8>) -> Icon {
     match strength {
-        None => "yh-wifi-off-symbolic",
-        Some(80..) => "yh-wifi-1-symbolic",
-        Some(60..) => "yh-wifi-2-symbolic",
-        Some(40..) => "yh-wifi-3-symbolic",
-        Some(20..) => "yh-wifi-4-symbolic",
-        Some(_) => "yh-wifi-5-symbolic",
+        None => Icon::WifiOff,
+        Some(80..) => Icon::Wifi1,
+        Some(60..) => Icon::Wifi2,
+        Some(40..) => Icon::Wifi3,
+        Some(20..) => Icon::Wifi4,
+        Some(_) => Icon::Wifi5,
     }
 }
 
-fn volume_glyph(volume: f32, muted: bool) -> &'static str {
+fn volume_glyph(volume: f32, muted: bool) -> Icon {
     if muted {
-        "yh-volume-off-symbolic"
+        Icon::VolumeOff
     } else if volume / 1.4 >= 0.66 {
-        "yh-volume-1-symbolic"
+        Icon::VolumeLow
     } else if volume / 1.4 >= 0.33 {
-        "yh-volume-2-symbolic"
+        Icon::VolumeMedium
     } else {
-        "yh-volume-3-symbolic"
+        Icon::VolumeHigh
     }
 }
 
-fn battery_glyph(percentage: f64, charging: bool) -> &'static str {
+fn battery_glyph(percentage: f64, charging: bool) -> Icon {
     if charging {
-        "yh-battery-charging-symbolic"
+        Icon::BatteryCharging
     } else if percentage >= 75. {
-        "yh-battery-1-symbolic"
+        Icon::BatteryHigh
     } else if percentage >= 50. {
-        "yh-battery-2-symbolic"
+        Icon::BatteryMedium
     } else if percentage >= 25. {
-        "yh-battery-3-symbolic"
+        Icon::BatteryLow
     } else {
-        "yh-battery-4-symbolic"
+        Icon::BatteryVeryLow
+    }
+}
+
+fn weather_icon(condition: WeatherCondition) -> Icon {
+    match condition {
+        WeatherCondition::ClearDay => Icon::WeatherClearDay,
+        WeatherCondition::ClearNight => Icon::WeatherClearNight,
+        WeatherCondition::CloudyDay => Icon::WeatherCloudyDay,
+        WeatherCondition::CloudyNight => Icon::WeatherCloudyNight,
+        WeatherCondition::ShowerRain => Icon::WeatherShowerRain,
+        WeatherCondition::RainDay => Icon::WeatherRainDay,
+        WeatherCondition::RainNight => Icon::WeatherRainNight,
+        WeatherCondition::Thunder => Icon::WeatherThunder,
+        WeatherCondition::Snow => Icon::WeatherSnow,
+        WeatherCondition::Fog => Icon::WeatherFog,
+        WeatherCondition::Unknown => Icon::WeatherUnknown,
     }
 }
 
@@ -376,7 +392,7 @@ fn weather_indicator(weather: WeatherState) -> gpui::Div {
     row()
         .h(px(BAR_CONTROL_HEIGHT))
         .gap_1()
-        .child(theme::symbolic(&weather.icon_name, theme::PRIMARY, 18.))
+        .child(weather_icon(weather.condition).render(theme::PRIMARY, 18.))
         .child(
             label(weather_text(&weather))
                 .text_size(px(16.))
@@ -491,14 +507,14 @@ impl Render for BottomBar {
                     desktop.toggle(Panel::Power, display, cx)
                 }))
                 .px_1()
-                .child(icon(Icon::Power)),
+                .child(icons::icon(Icon::Power)),
             )
             .child(
                 bar_control(button("lock", "画面をロック", move |_, cx| {
                     lock.lock(cx)
                 }))
                 .px_1()
-                .child(icon(Icon::Lock)),
+                .child(icons::icon(Icon::Lock)),
             )
             .child(divider());
         if let Some(error) = &self.desktop.feedback.read(cx).error {
@@ -522,14 +538,14 @@ impl Render for BottomBar {
             let gib = 1024_f64.powi(3);
             for (glyph, value) in [
                 (
-                    "yh-cpu-symbolic",
+                    Icon::Cpu,
                     self.cpu
                         .get(cx)
                         .map(|usage| format!("{:.1}%", usage.percent)),
                 ),
-                ("yh-gpu-symbolic", Some(gpu_usage(self.gpu.get(cx)))),
+                (Icon::Gpu, Some(gpu_usage(self.gpu.get(cx)))),
                 (
-                    "yh-memory-symbolic",
+                    Icon::Memory,
                     self.memory.get(cx).map(|usage| {
                         format!(
                             "{:.1}/{:.0} GiB",
@@ -539,7 +555,7 @@ impl Render for BottomBar {
                     }),
                 ),
                 (
-                    "yh-storage-symbolic",
+                    Icon::Storage,
                     self.storage.get(cx).map(|usage| {
                         format!(
                             "{:.1}/{:.1} GiB",
@@ -549,27 +565,24 @@ impl Render for BottomBar {
                     }),
                 ),
             ] {
-                start = start.child(
-                    row()
-                        .gap_1()
-                        .px_2()
-                        .child(theme::symbolic(glyph, ACCENT, 14.))
-                        .child(label(value.unwrap_or_else(|| "N/A".into())).font_family(DATA_FONT)),
-                );
+                start =
+                    start.child(row().gap_1().px_2().child(glyph.render(ACCENT, 14.)).child(
+                        label(value.unwrap_or_else(|| "N/A".into())).font_family(DATA_FONT),
+                    ));
             }
         }
 
         let end = row()
             .gap_2()
             .when_some(battery, |view, battery| {
+                let icon = battery_glyph(
+                    battery.percentage,
+                    battery.state == bkss_integration::ChargeState::Charging,
+                );
                 view.child(
                     row()
                         .gap_1()
-                        .child(theme::symbolic(
-                            battery_glyph(
-                                battery.percentage,
-                                battery.state == bkss_integration::ChargeState::Charging,
-                            ),
+                        .child(icon.render(
                             if battery.percentage <= 25. {
                                 theme::DANGER
                             } else {
@@ -591,13 +604,13 @@ impl Render for BottomBar {
                         .px_1()
                         .rounded_md()
                         .when(calendar_open, |view| view.bg(rgba(0xcba6f72e)))
-                        .child(theme::symbolic("yh-calendar-symbolic", theme::PRIMARY, 18.))
+                        .child(Icon::Calendar.render(theme::PRIMARY, 18.))
                         .child(div().text_size(px(16.)).child(date)),
                     )
                     .child(
                         row()
                             .gap_1()
-                            .child(theme::symbolic("yh-clock-symbolic", theme::PRIMARY, 18.))
+                            .child(Icon::Clock.render(theme::PRIMARY, 18.))
                             .child(
                                 div().text_size(px(16.)).child(
                                     clock
@@ -621,8 +634,7 @@ impl Render for BottomBar {
                 .px_1()
                 .rounded_md()
                 .when(notifications_open, |view| view.bg(rgba(0xcba6f72e)))
-                .child(theme::symbolic(
-                    "yh-bell-symbolic",
+                .child(Icon::Bell.render(
                     if notifications_open {
                         theme::PRIMARY
                     } else {
@@ -726,7 +738,7 @@ mod tests {
             (WeatherStatus::Error, "ERR"),
         ] {
             let weather = WeatherState {
-                icon_name: "yh-weather-cloudy-day-symbolic".into(),
+                condition: WeatherCondition::CloudyDay,
                 temperature: "14°C".into(),
                 status,
             };
@@ -773,21 +785,32 @@ mod tests {
 
     #[test]
     fn ags_status_glyphs_follow_the_original_thresholds() {
-        assert_eq!(wifi_glyph(None), "yh-wifi-off-symbolic");
-        assert_eq!(wifi_glyph(Some(80)), "yh-wifi-1-symbolic");
-        assert_eq!(wifi_glyph(Some(60)), "yh-wifi-2-symbolic");
-        assert_eq!(wifi_glyph(Some(40)), "yh-wifi-3-symbolic");
-        assert_eq!(wifi_glyph(Some(20)), "yh-wifi-4-symbolic");
-        assert_eq!(wifi_glyph(Some(19)), "yh-wifi-5-symbolic");
-        assert_eq!(volume_glyph(1., true), "yh-volume-off-symbolic");
-        assert_eq!(volume_glyph(1., false), "yh-volume-1-symbolic");
-        assert_eq!(volume_glyph(0.5, false), "yh-volume-2-symbolic");
-        assert_eq!(volume_glyph(0.2, false), "yh-volume-3-symbolic");
-        assert_eq!(battery_glyph(10., true), "yh-battery-charging-symbolic");
-        assert_eq!(battery_glyph(75., false), "yh-battery-1-symbolic");
-        assert_eq!(battery_glyph(50., false), "yh-battery-2-symbolic");
-        assert_eq!(battery_glyph(25., false), "yh-battery-3-symbolic");
-        assert_eq!(battery_glyph(24., false), "yh-battery-4-symbolic");
+        assert_eq!(wifi_glyph(None), Icon::WifiOff);
+        assert_eq!(wifi_glyph(Some(80)), Icon::Wifi1);
+        assert_eq!(wifi_glyph(Some(60)), Icon::Wifi2);
+        assert_eq!(wifi_glyph(Some(40)), Icon::Wifi3);
+        assert_eq!(wifi_glyph(Some(20)), Icon::Wifi4);
+        assert_eq!(wifi_glyph(Some(19)), Icon::Wifi5);
+        assert_eq!(volume_glyph(1., true), Icon::VolumeOff);
+        assert_eq!(volume_glyph(1., false), Icon::VolumeLow);
+        assert_eq!(volume_glyph(0.5, false), Icon::VolumeMedium);
+        assert_eq!(volume_glyph(0.2, false), Icon::VolumeHigh);
+        assert_eq!(battery_glyph(10., true), Icon::BatteryCharging);
+        assert_eq!(battery_glyph(75., false), Icon::BatteryHigh);
+        assert_eq!(battery_glyph(50., false), Icon::BatteryMedium);
+        assert_eq!(battery_glyph(25., false), Icon::BatteryLow);
+        assert_eq!(battery_glyph(24., false), Icon::BatteryVeryLow);
+    }
+
+    #[test]
+    fn weather_icons_keep_day_and_night_conditions_distinct() {
+        for (day, night) in [
+            (WeatherCondition::ClearDay, WeatherCondition::ClearNight),
+            (WeatherCondition::CloudyDay, WeatherCondition::CloudyNight),
+            (WeatherCondition::RainDay, WeatherCondition::RainNight),
+        ] {
+            assert_ne!(weather_icon(day), weather_icon(night));
+        }
     }
 
     #[test]
@@ -827,7 +850,7 @@ mod tests {
 
     #[test]
     fn main_tray_name_wins_and_keeps_pixmap_for_load_failure() {
-        let pixmap = theme::tray_image(&bkss_integration::TrayIcon {
+        let pixmap = tray_image(&bkss_integration::TrayIcon {
             width: 1,
             height: 1,
             rgba: vec![10, 20, 30, 255],

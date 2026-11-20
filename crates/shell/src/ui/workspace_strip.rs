@@ -16,6 +16,7 @@ use gpui::{
 use super::{
     bars::{client_is_on_workspace, ordered_workspaces, workspace_is_active, workspace_target},
     desktop::Desktop,
+    shared::{button_with_hover, muted},
     theme,
 };
 
@@ -499,7 +500,7 @@ fn pill_button(
     interactive: bool,
     action: impl Fn(&mut Window, &mut App) + 'static,
 ) -> gpui::Stateful<Div> {
-    theme::button_with_hover(
+    button_with_hover(
         gpui::ElementId::Name(format!("workspace-{id}").into()),
         format!("ワークスペース {name}"),
         action,
@@ -549,7 +550,7 @@ impl Render for WorkspaceStrip {
                 window.refresh();
             });
         if self.model.pills.is_empty() && self.loading {
-            strip = strip.child(theme::muted("ワークスペースを取得中"));
+            strip = strip.child(muted("ワークスペースを取得中"));
         }
         for (index, pill) in self.model.pills.clone().into_iter().enumerate() {
             if self.reveal && pill.active {

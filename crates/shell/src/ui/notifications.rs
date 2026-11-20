@@ -20,7 +20,10 @@ use crate::notification_model::active_notifications;
 use super::{
     banner_stack::{Banner, BannerPhase, BannerStack},
     desktop::{Desktop, Panel, PanelLifetime},
-    theme::{self, ACCENT, Icon, MUTED, button, icon, label, row},
+    feedback,
+    icons::{self, Icon},
+    shared::{button, label, muted, row},
+    theme::{self, ACCENT, MUTED},
 };
 
 const BANNER_TIMEOUT: Duration = Duration::from_secs(10);
@@ -285,7 +288,7 @@ impl NotificationView {
                 }
                 Ok::<_, Box<dyn std::error::Error>>(())
             };
-            theme::dispatch(
+            feedback::dispatch(
                 Ok::<_, std::io::Error>(operation),
                 "通知を削除できません",
                 &self.desktop.feedback,
@@ -334,7 +337,7 @@ impl NotificationView {
                                 return;
                             }
                             if let Some(state) = feed.read(cx).action_state(id, &key, cx) {
-                                theme::dispatch(
+                                feedback::dispatch(
                                     state.invoke_action(id, key.clone()),
                                     "通知の操作を実行できません",
                                     &feedback,
@@ -370,7 +373,7 @@ impl NotificationView {
                         return;
                     }
                     if let Some(state) = open.read(cx).action_state(id, "default", cx) {
-                        theme::dispatch(
+                        feedback::dispatch(
                             state.invoke_action(id, "default"),
                             "通知を開けません",
                             &feedback,
@@ -428,7 +431,7 @@ impl NotificationView {
                                     .text_size(px(11.)),
                             )
                             .child(
-                                theme::muted(received)
+                                muted(received)
                                     .font_family(theme::DATA_FONT)
                                     .text_size(px(10.)),
                             )
@@ -452,7 +455,7 @@ impl NotificationView {
                                 .min_h(px(22.))
                                 .px_1()
                                 .py_0()
-                                .child(icon(Icon::Close).size(px(13.))),
+                                .child(icons::icon(Icon::Close).size(px(13.))),
                             ),
                     )
                     .child(body)
@@ -613,7 +616,7 @@ impl Render for NotificationView {
                                     "通知一覧を閉じる",
                                     move |_, cx| close.close(Panel::Notifications, display, cx),
                                 )
-                                .child(icon(Icon::Close)),
+                                .child(icons::icon(Icon::Close)),
                             ),
                     ),
             );
@@ -637,8 +640,8 @@ impl Render for NotificationView {
                         .items_center()
                         .justify_center()
                         .gap_3()
-                        .child(icon(Icon::Bell).size(px(28.)))
-                        .child(theme::muted("通知はありません")),
+                        .child(icons::icon(Icon::Bell).size(px(28.)))
+                        .child(muted("通知はありません")),
                 );
             }
             for (name, group) in groups {
@@ -686,7 +689,7 @@ impl Render for NotificationView {
                                         .text_size(px(11.)),
                                 )
                                 .child(
-                                    theme::muted(if expanded {
+                                    muted(if expanded {
                                         "まとめる"
                                     } else {
                                         "すべて表示"
@@ -703,7 +706,7 @@ impl Render for NotificationView {
                                     },
                                 )
                                 .min_h(px(22.))
-                                .child(icon(Icon::Close).size(px(13.))),
+                                .child(icons::icon(Icon::Close).size(px(13.))),
                             ),
                     );
                 }
@@ -733,7 +736,7 @@ impl Render for NotificationView {
             }
             content = content
                 .child(list)
-                .children(theme::error_banner(&self.desktop.feedback, cx));
+                .children(feedback::error_banner(&self.desktop.feedback, cx));
         }
         let root = self
             .desktop

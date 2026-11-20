@@ -4,7 +4,7 @@ use bkss_core::{MountedBinding, ReactiveSubscription, SourceState};
 use bkss_integration::CommandIpcState;
 use gpui::{App, AppContext, Context, Entity, Task};
 
-use super::{desktop::Desktop, theme};
+use super::{desktop::Desktop, feedback};
 
 pub struct CommandListener {
     binding: MountedBinding<CommandIpcState>,
@@ -57,7 +57,7 @@ impl CommandListener {
                     if let Err(error) = request.respond(response)
                         && let Some(desktop) = desktop.upgrade()
                     {
-                        theme::fail(
+                        feedback::fail(
                             &desktop.feedback,
                             format!("外部からの操作に応答できません: {error}"),
                             cx,

@@ -23,9 +23,12 @@ use super::{
     bars::{BottomBar, TopBar},
     calendar::CalendarView,
     commands::CommandListener,
+    external_icon::IconIndex,
+    feedback::{self, Feedback},
+    icons::{self, Icon},
     notifications::{NotificationFeed, NotificationView, notification_panel_limit},
     power::PowerView,
-    theme::{self, Feedback, Icon, IconIndex},
+    theme,
     tray::TrayView,
 };
 
@@ -148,7 +151,9 @@ impl Desktop {
                     self.open.borrow_mut().insert((display, panel));
                     self.feedback.update(cx, |_, cx| cx.notify());
                 }
-                Err(error) => theme::fail(&self.feedback, format!("画面を開けません: {error}"), cx),
+                Err(error) => {
+                    feedback::fail(&self.feedback, format!("画面を開けません: {error}"), cx)
+                }
             }
         }
     }
@@ -159,7 +164,7 @@ impl Desktop {
         if let Some(handle) = self.handles.borrow().get(&(display, panel)).cloned()
             && let Err(error) = handle.hide(display, cx)
         {
-            theme::fail(&self.feedback, format!("画面を閉じられません: {error}"), cx);
+            feedback::fail(&self.feedback, format!("画面を閉じられません: {error}"), cx);
         }
     }
 
@@ -207,10 +212,10 @@ impl Desktop {
             img(path)
                 .size(px(size))
                 .flex_shrink_0()
-                .with_fallback(move || theme::icon(Icon::App).size(px(size)).into_any_element())
+                .with_fallback(move || icons::icon(Icon::App).size(px(size)).into_any_element())
                 .into_any_element()
         } else {
-            theme::icon(Icon::App).size(px(size)).into_any_element()
+            icons::icon(Icon::App).size(px(size)).into_any_element()
         }
     }
 
@@ -219,7 +224,7 @@ impl Desktop {
     }
 
     pub fn switch_workspace(&self, name: &str, cx: &mut App) {
-        theme::dispatch(
+        feedback::dispatch(
             self.actions.switch_workspace(name),
             "ワークスペースを切り替えられません",
             &self.feedback,
@@ -228,7 +233,7 @@ impl Desktop {
     }
 
     pub fn lock(&self, cx: &mut App) {
-        theme::dispatch(
+        feedback::dispatch(
             Ok::<_, io::Error>(self.actions.lock()),
             "画面をロックできません",
             &self.feedback,
@@ -237,7 +242,7 @@ impl Desktop {
     }
 
     pub fn reboot(&self, cx: &mut App) {
-        theme::dispatch(
+        feedback::dispatch(
             Ok::<_, io::Error>(self.actions.reboot()),
             "再起動できません",
             &self.feedback,
@@ -246,7 +251,7 @@ impl Desktop {
     }
 
     pub fn poweroff(&self, cx: &mut App) {
-        theme::dispatch(
+        feedback::dispatch(
             Ok::<_, io::Error>(self.actions.poweroff()),
             "終了できません",
             &self.feedback,
@@ -256,7 +261,7 @@ impl Desktop {
 
     pub fn open_tray(self: &Rc<Self>, display: DisplayId, item: TrayItem, cx: &mut App) {
         if item.menu_path.is_none() {
-            theme::dispatch(
+            feedback::dispatch(
                 item.context_menu(0, 0),
                 "メニューを開けません",
                 &self.feedback,

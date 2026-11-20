@@ -8,7 +8,9 @@ use crate::calendar_model::{current_month, month_grid, shift_month};
 
 use super::{
     desktop::{Desktop, Panel, PanelLifetime},
-    theme::{self, DATA_FONT, Icon, button, icon, row},
+    icons::{self, Icon},
+    shared::{button, muted, row},
+    theme::{self, DATA_FONT},
 };
 
 pub struct CalendarView {
@@ -92,7 +94,7 @@ impl Render for CalendarView {
             .into_iter()
             .enumerate()
             .map(|(index, day)| {
-                theme::muted(day)
+                muted(day)
                     .flex_1()
                     .text_center()
                     .text_size(px(11.))
@@ -135,7 +137,7 @@ impl Render for CalendarView {
                                                 cx.notify();
                                             })
                                         })
-                                        .child(icon(Icon::Left)),
+                                        .child(icons::icon(Icon::Left)),
                                     )
                                     .child(
                                         button("next-month", "次の月", move |_, cx| {
@@ -144,7 +146,7 @@ impl Render for CalendarView {
                                                 cx.notify();
                                             })
                                         })
-                                        .child(icon(Icon::Right)),
+                                        .child(icons::icon(Icon::Right)),
                                     )
                                     .child(
                                         button(
@@ -152,7 +154,7 @@ impl Render for CalendarView {
                                             "カレンダーを閉じる",
                                             move |_, cx| close.close(Panel::Calendar, display, cx),
                                         )
-                                        .child(icon(Icon::Close)),
+                                        .child(icons::icon(Icon::Close)),
                                     ),
                             ),
                     )
