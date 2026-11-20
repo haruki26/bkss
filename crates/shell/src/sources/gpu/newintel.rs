@@ -59,8 +59,6 @@ impl IntelSamplers {
             }
             gpu.metrics = GpuMetrics {
                 utilization_percent: None,
-                memory_used_bytes: None,
-                memory_total_bytes: None,
             };
             let Some(device_path) = drm_device_path(root, &gpu.name) else {
                 self.children.remove(&gpu.name);
@@ -308,7 +306,7 @@ mod tests {
     use gpui::{App, TestAppContext};
     use std::sync::mpsc::{self, SyncSender};
 
-    const FIXTURE: &str = include_str!("fixtures/intel-gpu-sample.json");
+    const FIXTURE: &str = include_str!("../../../tests/fixtures/intel-gpu-sample.json");
 
     struct CancellationSource {
         sender: SyncSender<Cancellation>,
@@ -522,13 +520,9 @@ mod tests {
         GpuState {
             devices: vec![super::super::state::Gpu {
                 name: "card0".to_owned(),
-                vendor_id: Some("8086".to_owned()),
-                device_id: Some("a7a8".to_owned()),
                 support: GpuSupport::Intel,
                 metrics: GpuMetrics {
                     utilization_percent: None,
-                    memory_used_bytes: None,
-                    memory_total_bytes: None,
                 },
             }],
         }

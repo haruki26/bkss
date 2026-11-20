@@ -140,9 +140,7 @@ fn snapshot(root: &Path) -> Result<GpuState, GpuError> {
             continue;
         }
         let device = entry.path().join("device");
-        let vendor_id = read_hex(&device.join("vendor"));
-        let device_id = read_hex(&device.join("device"));
-        let support = match vendor_id.as_deref() {
+        let support = match read_hex(&device.join("vendor")).as_deref() {
             Some("1002") => GpuSupport::Amd,
             Some("8086") if intel_i915(&device) => GpuSupport::Intel,
             _ => GpuSupport::Unsupported,
@@ -152,14 +150,10 @@ fn snapshot(root: &Path) -> Result<GpuState, GpuError> {
         } else {
             GpuMetrics {
                 utilization_percent: None,
-                memory_used_bytes: None,
-                memory_total_bytes: None,
             }
         };
         devices.push(Gpu {
             name,
-            vendor_id,
-            device_id,
             support,
             metrics,
         });
@@ -190,12 +184,8 @@ fn intel_i915(device: &Path) -> bool {
 fn amd_metrics(device: &Path) -> GpuMetrics {
     let utilization_percent =
         read_u64(&device.join("gpu_busy_percent")).map(|value| value.min(100) as f32);
-    let memory_used_bytes = read_u64(&device.join("mem_info_vram_used"));
-    let memory_total_bytes = read_u64(&device.join("mem_info_vram_total"));
     GpuMetrics {
         utilization_percent,
-        memory_used_bytes,
-        memory_total_bytes,
     }
 }
 
@@ -215,16 +205,12 @@ mod tests {
         let device = root.join("card0/device");
         fs::create_dir_all(&device).unwrap();
         fs::write(device.join("vendor"), "0x1002\n").unwrap();
-        fs::write(device.join("device"), "0x744c\n").unwrap();
         fs::write(device.join("gpu_busy_percent"), "142\n").unwrap();
-        fs::write(device.join("mem_info_vram_used"), "2048\n").unwrap();
 
         let state = snapshot(&root).unwrap();
         assert_eq!(state.devices.len(), 1);
         assert_eq!(state.devices[0].support, GpuSupport::Amd);
         assert_eq!(state.devices[0].metrics.utilization_percent, Some(100.0));
-        assert_eq!(state.devices[0].metrics.memory_used_bytes, Some(2048));
-        assert_eq!(state.devices[0].metrics.memory_total_bytes, None);
         fs::remove_dir_all(&root).unwrap();
     }
 
@@ -250,7 +236,6 @@ mod tests {
         fs::create_dir_all(&device).unwrap();
         fs::create_dir_all(&driver).unwrap();
         fs::write(device.join("vendor"), "0x8086\n").unwrap();
-        fs::write(device.join("device"), "0xa7a8\n").unwrap();
         std::os::unix::fs::symlink(&driver, device.join("driver")).unwrap();
         let state = snapshot(&root).unwrap();
         assert_eq!(state.devices[0].support, GpuSupport::Intel);

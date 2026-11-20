@@ -740,13 +740,9 @@ mod tests {
     fn gpu_usage_reports_only_real_percentages_and_keeps_missing_values_distinct_from_zero() {
         let device = |name: &str, utilization_percent| Gpu {
             name: name.into(),
-            vendor_id: None,
-            device_id: None,
             support: GpuSupport::Amd,
             metrics: GpuMetrics {
                 utilization_percent,
-                memory_used_bytes: None,
-                memory_total_bytes: None,
             },
         };
         assert_eq!(gpu_usage(None), "—");
