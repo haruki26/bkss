@@ -41,7 +41,7 @@ fn parse_args(args: impl IntoIterator<Item = std::ffi::OsString>) -> Result<Comm
         {
             Ok(Command::TogglePowermenu)
         }
-        _ => Err("usage: shell [toggle powermenu]"),
+        _ => Err("usage: bkss [toggle powermenu]"),
     }
 }
 
@@ -61,7 +61,7 @@ mod tests {
         );
         assert_eq!(
             parse_args(["unknown"].map(Into::into)),
-            Err("usage: shell [toggle powermenu]")
+            Err("usage: bkss [toggle powermenu]")
         );
     }
 }

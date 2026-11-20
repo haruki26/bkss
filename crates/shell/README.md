@@ -24,13 +24,13 @@ Hyprland の Wayland セッション、互換性のある Hyprglass、セッシ�
 以下のコマンドは BKSS の workspace root で実行する。
 
 ```sh
-mise x -- cargo build --release -p shell --bin shell
-./target/release/shell
+mise x -- cargo build --release -p shell --bin bkss
+./target/release/bkss
 ```
 
 通知サービスが競合するため、既存の AGS シェルなど別の通知デーモンとの同時起動は避ける。AGS を使っている場合は、事前に `ags quit`（独自インスタンスは `ags quit --instance <名前>`）で終了する。起動ラッパーだけを停止しても通知を所有するプロセスが残る場合がある。
 
-Hyprland の自動起動には、この checkout の `target/release/shell` の絶対パスを指定する。電源メニューのキーバインドには同じ実行ファイルと引数 `toggle powermenu` を指定する。初回起動前と Rust ソースの変更後には再ビルドする。設定の再読み込みだけでは、自動起動の再実行やアプリケーションの再起動は行われない。
+Hyprland の自動起動には、この checkout の `target/release/bkss` の絶対パスを指定する。電源メニューのキーバインドには同じ実行ファイルと引数 `toggle powermenu` を指定する。初回起動前と Rust ソースの変更後には再ビルドする。設定の再読み込みだけでは、自動起動の再実行やアプリケーションの再起動は行われない。
 
 再起動するとメモリ上の未読通知は失われる。
 
@@ -39,7 +39,7 @@ Hyprland の自動起動には、この checkout の `target/release/shell` の�
 実行中のシェルの電源メニューを切り替える。
 
 ```sh
-./target/release/shell toggle powermenu
+./target/release/bkss toggle powermenu
 ```
 
 ## Glass の設定
