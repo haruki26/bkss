@@ -1,4 +1,5 @@
 mod binding;
+mod control;
 mod entry;
 mod error;
 mod runtime;

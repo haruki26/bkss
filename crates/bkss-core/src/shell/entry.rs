@@ -35,19 +35,74 @@ impl Shell {
 
     #[cfg(target_os = "linux")]
     /// Owns the Linux GPUI application, event loop, and quit policy, then returns
-    /// the finalized shell result. Unlike [`Self::attach`], failures request app quit.
+    /// the finalized shell result. A leading `quit` requests lifecycle shutdown
+    /// for this executable; otherwise it launches normally. Unlike [`Self::attach`],
+    /// failures request app quit. Lifecycle control is available only when a
+    /// verified private `XDG_RUNTIME_DIR` is configured.
     pub fn run(
         setup: impl FnOnce(RuntimeHandle, &mut App) -> Result<(), ShellError> + 'static,
     ) -> Result<(), ShellError> {
         use std::{cell::RefCell, rc::Rc};
+        let mut args = std::env::args_os().skip(1);
+        match args.next().as_deref() {
+            Some(arg) if arg == "quit" => {
+                if args.next().is_some() {
+                    return Err(ShellError::setup(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "quit does not accept arguments",
+                    )));
+                }
+                let executable = std::env::current_exe().map_err(ShellError::setup)?;
+                return super::control::request_quit(&executable).map_err(ShellError::setup);
+            }
+            _ => {}
+        }
+        let control_reservation = if std::env::var_os("XDG_RUNTIME_DIR").is_some() {
+            let executable = std::env::current_exe().map_err(ShellError::setup)?;
+            super::control::ControlReservation::reserve(&executable).map_err(ShellError::setup)?
+        } else {
+            None
+        };
+        let control_reservation = Rc::new(RefCell::new(control_reservation));
+        let app_control_reservation = Rc::clone(&control_reservation);
         let result = Rc::new(RefCell::new(None));
         let app_result = Rc::clone(&result);
         let retained = Rc::new(RefCell::new(None));
         let app_retained = Rc::clone(&retained);
+        let control = Rc::new(RefCell::new(None));
+        let app_control = Rc::clone(&control);
+        let control_task = Rc::new(RefCell::new(None));
+        let app_control_task = Rc::clone(&control_task);
 
         gpui_platform::application().run(move |cx| {
             match Self::attach_with_quit_policy(cx, setup, true) {
                 Ok(handle) => {
+                    if let Some(mut reservation) = app_control_reservation.borrow_mut().take() {
+                        let requests = match reservation.take_dispatcher() {
+                            Ok(requests) => requests,
+                            Err(error) => {
+                                *app_result.borrow_mut() =
+                                    Some(Err(handle.setup_failed(ShellError::setup(error), cx)));
+                                return;
+                            }
+                        };
+                        let weak = handle.downgrade();
+                        *app_control_task.borrow_mut() = Some(cx.spawn(async move |cx| {
+                            if requests.recv().await.is_ok()
+                                && let Some(runtime) = weak.upgrade()
+                            {
+                                cx.update(|cx| runtime.shutdown(cx));
+                            }
+                        }));
+                        match reservation.activate() {
+                            Ok(server) => *app_control.borrow_mut() = Some(server),
+                            Err(error) => {
+                                *app_result.borrow_mut() =
+                                    Some(Err(handle.setup_failed(ShellError::setup(error), cx)));
+                                return;
+                            }
+                        }
+                    }
                     *app_result.borrow_mut() = handle.result();
                     *app_retained.borrow_mut() = Some(handle);
                 }
@@ -55,7 +110,7 @@ impl Shell {
             }
         });
 
-        if let Some(handle) = retained.borrow().as_ref() {
+        let outcome = if let Some(handle) = retained.borrow().as_ref() {
             handle.finish_after_run()
         } else {
             result.borrow().clone()
@@ -64,7 +119,11 @@ impl Shell {
             ShellError::setup(std::io::Error::other(
                 "GPUI application exited without launching a shell",
             ))
-        })?
+        })
+        .and_then(|result| result);
+        drop(control);
+        drop(control_task);
+        outcome
     }
 }
 

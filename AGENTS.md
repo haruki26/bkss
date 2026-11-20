@@ -20,6 +20,7 @@ BKSS は Rust と GPUI で Linux Wayland 向けシェルを組み立てるライ
 - `shell` は SDK を利用する Hyprland 向けデスクトップアプリケーションです。固有の UI・設定・GPU Source を所有し、SDK crate からは依存しません。
 - `bkss-ui → bkss-core`、`bkss-integration → bkss-core` の依存方向を守り、core から上位層への依存や循環依存を作りません。
 - 外部 IPC や特定 integration を core に持ち込まず、外部 backend の取得・操作や compositor 通信を UI に実装しません。backend の詳細はそれを所有する層の境界内に置きます。
+- `Shell::run` が所有するプロセスの終了に限り、Linux の非公開 lifecycle IPC を core に置けます。汎用コマンドや `Shell::attach` には使いません。
 - crate 固有のモジュール構成や実装上の注意は、その crate 内の `AGENTS.md` に記載してください。workspace 全体の設計方針は本書に集約します。
 
 ## Runtime と所有

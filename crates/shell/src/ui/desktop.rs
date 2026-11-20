@@ -308,13 +308,15 @@ impl Desktop {
     }
 }
 
-pub fn run(services: Services, actions: Actions) -> Result<(), ShellError> {
-    let icons = IconIndex::load();
-    let bar_style = theme::glass_style(20.).map_err(ShellError::setup)?;
-    let panel_style = theme::glass_style(22.).map_err(ShellError::setup)?;
-    let calendar_style = theme::glass_style(10.).map_err(ShellError::setup)?;
-    let power_style = theme::glass_style(14.).map_err(ShellError::setup)?;
+pub fn run() -> Result<(), ShellError> {
     Shell::run(move |runtime, cx| {
+        let services = Services::new().map_err(ShellError::setup)?;
+        let actions = Actions::new(services.hyprland_socket_dir.clone());
+        let icons = IconIndex::load();
+        let bar_style = theme::glass_style(20.).map_err(ShellError::setup)?;
+        let panel_style = theme::glass_style(22.).map_err(ShellError::setup)?;
+        let calendar_style = theme::glass_style(10.).map_err(ShellError::setup)?;
+        let power_style = theme::glass_style(14.).map_err(ShellError::setup)?;
         let desktop = Rc::new(Desktop {
             services,
             actions,

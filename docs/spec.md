@@ -39,6 +39,8 @@ Glass の基礎描画と低レベルの Surface/lifecycle は core に置く。u
 
 Shell の runtime entry point は core に置く。ui の ShellSurface／Bar／Overlay は inert な Surface 宣言であり、明示的な runtime 登録時に生成を開始する。通常の GPUI Element を child に置くだけで独立した native Surface を生成しない。宣言は再利用可能な設定と style を保持し、消費される Div／AnyElement の木は保持しない。fallible content factory が display／mount ごとの view を生成し、その render が毎回新しい GPUI content を組み立てる。Styled はその内部 root に適用し、ParentElement による合成は新しい content や Glass element で行う。
 
+Linux では `Shell::run` が起動と終了要求を扱う。`run` は従来の起動処理に入り、`quit` は GPUI や setup callback を起動せず、同じ実行ファイルから起動されたシェルに終了を要求する。`quit` の成功は終了要求の受理を示し、プロセスの終了完了までは待たない。`Shell::attach` は終了用の IPC を開かない。
+
 ### Bar
 
 画面端に配置する layer-shell Surface。上下左右の辺を扱い、既定は下端、Layer::Top、keyboard None とする。厚みは確定 logical px 専用型で指定し、auto／割合指定を型で排除する。厚みは有限かつ1 logical px以上とし、数値は副作用前に検証する。GPUI の h／w は内部 content の style であり、native Surface の厚みと予約量を上書きしない。表示・終了・途中反転は Overlay と同じ core controller を使い、登録時に対象 Output への初回表示を要求する。
