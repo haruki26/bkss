@@ -1,0 +1,29 @@
+pre-commit:
+  parallel: true
+  commands:
+    shell-format:
+      root: crates/shell
+      glob:
+        - "crates/shell/*.rs"
+        - "crates/shell/**/*.rs"
+      run: cargo fmt -p shell
+      stage_fixed: true
+    shell-lint:
+      root: crates/shell
+      glob:
+        - "crates/shell/*.rs"
+        - "crates/shell/**/*.rs"
+      run: cargo clippy -p shell
+      stage_fixed: true
+
+pre-push:
+  commands:
+    shell-test:
+      glob:
+        - "crates/shell/*.rs"
+        - "crates/shell/**/*.rs"
+        - "crates/shell/Cargo.toml"
+        - "crates/shell/lefthook.yml"
+        - "Cargo.toml"
+        - "Cargo.lock"
+      run: cargo test -p shell
