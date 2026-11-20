@@ -28,6 +28,8 @@ mise x -- cargo build --release -p shell --bin bkss
 ./target/release/bkss run
 ```
 
+ユーザー環境にインストールする場合は、workspace root で `mise run install-local` を実行する。既定のインストール先は `~/.cargo/bin/bkss`。タスクは `PATH` を変更しないので、必要なら Cargo の `bin` ディレクトリを自分で `PATH` に追加する。インストール版を使う場合は、自動起動と `bkss quit` に同じインストール済みバイナリを使う。
+
 通知サービスが競合するため、既存の AGS シェルなど別の通知デーモンとの同時起動は避ける。AGS を使っている場合は、事前に `ags quit`（独自インスタンスは `ags quit --instance <名前>`）で終了する。起動ラッパーだけを停止しても通知を所有するプロセスが残る場合がある。
 
 Hyprland の自動起動には、この checkout の `target/release/bkss` の絶対パスと引数 `run` を指定する。引数なしの起動はできない。電源メニューのキーバインドには同じ実行ファイルと引数 `toggle powermenu` を指定する。初回起動前と Rust ソースの変更後には再ビルドする。設定の再読み込みだけでは、自動起動の再実行やアプリケーションの再起動は行われない。

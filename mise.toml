@@ -1,3 +1,7 @@
 [tools]
 lefthook = { version = "latest", postinstall = "lefthook install" }
 rust = "latest"
+
+[tasks.install-local]
+description = "Install the bkss binary into the local Cargo bin directory"
+run = "cargo install --path crates/shell --bin bkss --locked"
