@@ -3,16 +3,15 @@ use std::{
     fmt,
     io::{Read, Write},
     process::{Child, Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
     thread,
     time::Duration,
 };
 
-use bkss_core::{Source, SourceDescriptor, SourcePublisher, ThreadPublisher, ThreadPublisherGuard};
-use bkss_integration::Secret;
+use bkss_core::{Source, SourceDescriptor, SourcePublisher, ThreadPublisher};
+use bkss_integration::{
+    Secret,
+    base::{Cancellation, WorkerGuard, spawn_worker},
+};
 use gpui::App;
 use serde::Deserialize;
 
@@ -76,7 +75,7 @@ impl Source for WeatherSource {
     type Key = ();
     type Value = WeatherState;
     type Error = WeatherError;
-    type Guard = WeatherGuard;
+    type Guard = WorkerGuard;
 
     fn key(&self) {}
 
@@ -91,25 +90,15 @@ impl Source for WeatherSource {
             .as_ref()
             .map(|key| Secret::new(key.expose().clone()));
         let settings_error = self.settings_error;
-        let cancelled = Arc::new(AtomicBool::new(false));
-        let worker_cancelled = Arc::clone(&cancelled);
-        let worker = thread::Builder::new()
-            .name("shell-weather".into())
-            .spawn(move || {
-                let result =
-                    weather_worker(publisher.clone(), key, settings_error, &worker_cancelled);
-                if let Err(error) = result
-                    && !worker_cancelled.load(Ordering::Acquire)
-                {
-                    let _ = publisher.fail(error);
-                }
-            })
-            .map_err(|_| WeatherError("Could not start weather worker"))?;
-        Ok(WeatherGuard {
-            cancelled,
-            bridge: Some(bridge),
-            worker: Some(worker),
-        })
+        spawn_worker(
+            "shell-weather",
+            bridge,
+            publisher,
+            move |publisher, cancellation| {
+                weather_worker(publisher, key, settings_error, cancellation)
+            },
+        )
+        .map_err(|_| WeatherError("Could not start weather worker"))
     }
 }
 
@@ -117,7 +106,7 @@ fn weather_worker(
     publisher: ThreadPublisher<WeatherState, WeatherError>,
     key: Option<Secret<String>>,
     settings_error: bool,
-    cancelled: &AtomicBool,
+    cancelled: Cancellation,
 ) -> Result<(), WeatherError> {
     if settings_error {
         publish_weather(
@@ -141,23 +130,23 @@ fn weather_worker(
         return Ok(());
     };
     loop {
-        if cancelled.load(Ordering::Acquire) {
+        if cancelled.is_cancelled() {
             return Ok(());
         }
-        let result = resolve_location(cancelled).and_then(|coordinates| {
+        let result = resolve_location(&cancelled).and_then(|coordinates| {
             let mut result = Err(WeatherError("Weather request failed"));
             for attempt in 0..3 {
-                result = fetch_weather(key.expose(), coordinates, cancelled);
-                if result.is_ok() || cancelled.load(Ordering::Acquire) {
+                result = fetch_weather(key.expose(), coordinates, &cancelled);
+                if result.is_ok() || cancelled.is_cancelled() {
                     break;
                 }
-                if attempt < 2 && !wait_or_cancel(Duration::from_secs(10), cancelled) {
+                if attempt < 2 && !wait_or_cancel(Duration::from_secs(10), &cancelled) {
                     return Err(WeatherError("Weather request cancelled"));
                 }
             }
             result
         });
-        if cancelled.load(Ordering::Acquire) {
+        if cancelled.is_cancelled() {
             return Ok(());
         }
         let state = result.unwrap_or_else(|_| WeatherState {
@@ -166,7 +155,7 @@ fn weather_worker(
             ..WeatherState::default()
         });
         publish_weather(&publisher, state)?;
-        if !wait_or_cancel(UPDATE_INTERVAL, cancelled) {
+        if !wait_or_cancel(UPDATE_INTERVAL, &cancelled) {
             return Ok(());
         }
     }
@@ -184,7 +173,7 @@ fn publish_weather(
 fn fetch_weather(
     key: &str,
     coordinates: (f64, f64),
-    cancelled: &AtomicBool,
+    cancelled: &Cancellation,
 ) -> Result<WeatherState, WeatherError> {
     if key.trim().is_empty() {
         return Err(WeatherError("Weather is not configured"));
@@ -250,7 +239,7 @@ fn weather_icon(code: &str) -> &'static str {
     }
 }
 
-fn resolve_location(cancelled: &AtomicBool) -> Result<(f64, f64), WeatherError> {
+fn resolve_location(cancelled: &Cancellation) -> Result<(f64, f64), WeatherError> {
     if let Ok(location) =
         futures_lite::future::block_on(futures_lite::future::race(geoclue_location(), async {
             async_io::Timer::after(Duration::from_secs(15)).await;
@@ -353,8 +342,8 @@ async fn geoclue_location() -> Result<(f64, f64), WeatherError> {
     }
 }
 
-fn curl(url: &str, cancelled: &AtomicBool) -> Result<Vec<u8>, WeatherError> {
-    if cancelled.load(Ordering::Acquire) {
+fn curl(url: &str, cancelled: &Cancellation) -> Result<Vec<u8>, WeatherError> {
+    if cancelled.is_cancelled() {
         return Err(WeatherError("Weather request cancelled"));
     }
     let mut child = Command::new("curl")
@@ -394,7 +383,7 @@ fn curl(url: &str, cancelled: &AtomicBool) -> Result<Vec<u8>, WeatherError> {
             WeatherError("Could not start curl output reader")
         })?;
     loop {
-        if cancelled.load(Ordering::Acquire) {
+        if cancelled.is_cancelled() {
             terminate(&mut child);
             let _ = reader.join();
             return Err(WeatherError("Weather request cancelled"));
@@ -439,9 +428,9 @@ fn percent_encode(value: &str) -> String {
     output
 }
 
-fn wait_or_cancel(duration: Duration, cancelled: &AtomicBool) -> bool {
+fn wait_or_cancel(duration: Duration, cancelled: &Cancellation) -> bool {
     let end = std::time::Instant::now() + duration;
-    while !cancelled.load(Ordering::Acquire) {
+    while !cancelled.is_cancelled() {
         let remaining = end.saturating_duration_since(std::time::Instant::now());
         if remaining.is_zero() {
             return true;
@@ -454,20 +443,6 @@ fn wait_or_cancel(duration: Duration, cancelled: &AtomicBool) -> bool {
 fn terminate(child: &mut Child) {
     let _ = child.kill();
     let _ = child.wait();
-}
-
-pub struct WeatherGuard {
-    cancelled: Arc<AtomicBool>,
-    bridge: Option<ThreadPublisherGuard>,
-    worker: Option<thread::JoinHandle<()>>,
-}
-
-impl Drop for WeatherGuard {
-    fn drop(&mut self) {
-        self.cancelled.store(true, Ordering::Release);
-        self.bridge.take();
-        self.worker.take();
-    }
 }
 
 #[cfg(test)]
@@ -493,7 +468,56 @@ mod tests {
 
     #[test]
     fn respects_cancellation_before_starting_http_request() {
-        let cancelled = AtomicBool::new(true);
+        let cancelled = test_cancellation();
         assert!(curl("https://example.invalid", &cancelled).is_err());
+    }
+
+    fn test_cancellation() -> Cancellation {
+        use bkss_core::{ResourceLease, ResourceScope};
+        use bkss_integration::{
+            Source, SourceDescriptor, SourcePublisher,
+            base::{WorkerGuard, spawn_worker},
+        };
+        use gpui::{App, TestAppContext};
+        use std::sync::mpsc;
+
+        struct CancellationSource(mpsc::SyncSender<Cancellation>);
+        impl Source for CancellationSource {
+            type Key = ();
+            type Value = ();
+            type Error = std::io::Error;
+            type Guard = WorkerGuard;
+            fn key(&self) {}
+            fn start(
+                &self,
+                publisher: SourcePublisher<Self>,
+                cx: &mut App,
+            ) -> std::io::Result<Self::Guard> {
+                let (publisher, bridge) = publisher.thread_bridge(|value| value, |error| error, cx);
+                let sender = self.0.clone();
+                spawn_worker(
+                    "weather-cancellation-test",
+                    bridge,
+                    publisher,
+                    move |_, token| {
+                        sender
+                            .send(token.clone())
+                            .map_err(|_| std::io::Error::other("cancellation receiver dropped"))?;
+                        futures_lite::future::block_on(token.cancelled());
+                        Ok(())
+                    },
+                )
+            }
+        }
+
+        let cx = TestAppContext::single();
+        cx.dispatcher.allow_parking();
+        let scope = cx.update(ResourceScope::new);
+        let (sender, receiver) = mpsc::sync_channel(1);
+        let descriptor = SourceDescriptor::new(CancellationSource(sender));
+        let lease: ResourceLease<()> = cx.update(|cx| scope.acquire(&descriptor, cx).unwrap());
+        let token = receiver.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(lease);
+        token
     }
 }

@@ -1,6 +1,7 @@
 use bkss_core::{ResourceScope, SourceState};
 use bkss_integration::{
-    ActiveWorkspace, Hyprland, HyprlandError, HyprlandState, SpecialWorkspace, Workspace,
+    ActiveWorkspace, Clock, Hyprland, HyprlandError, HyprlandState, Source, SpecialWorkspace,
+    Workspace,
 };
 use gpui::TestAppContext;
 use std::{
@@ -18,6 +19,14 @@ use std::{
 };
 
 static NEXT_PATH: AtomicU64 = AtomicU64::new(0);
+
+#[test]
+fn clock_and_hyprland_guards_remain_distinct_types() {
+    assert_ne!(
+        std::any::TypeId::of::<<Clock as Source>::Guard>(),
+        std::any::TypeId::of::<<Hyprland as Source>::Guard>()
+    );
+}
 
 fn socket_dir() -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
