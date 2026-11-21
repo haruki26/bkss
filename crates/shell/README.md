@@ -78,7 +78,18 @@ hg.layer("bkss-notifications", { exclude = true })
 hg.config({ layers = { enabled = true } })
 ```
 
-通常の window と subsurface は対象にしない。通知センターの surface は画面全体を覆うため除外する。既存の layer 設定を更新する場合は、上記の namespace に合わせる。自動インストール・reload は行わない。
+通常の window と subsurface は対象にしない。通知センターの背景には Hyprglass ではなく Hyprland 標準のブラーを使う。既存の Hyprglass のプリセット一覧に `bkss-notifications` を追加していた場合は取り除き、上記の除外ルールを入れる。
+
+Hyprland の `decoration.blur.enabled` を有効にし、次のレイヤールールを追加してから `hyprctl reload` を実行する。`ignore_alpha = 0.0` で背景が描かれた範囲だけをぼかし、`no_anim = true` で Hyprland 側のレイヤーアニメーションを無効にする。通知センターを閉じるアニメーションは BKSS が行う。BKSS は設定の変更や reload を自動では行わない。
+
+```lua
+hl.layer_rule({
+    match = { namespace = "bkss-notifications" },
+    blur = true,
+    ignore_alpha = 0.0,
+    no_anim = true,
+})
+```
 
 BKSS の example にある `bkss-bottom-bar` は example 専用の名前であり、このシェルの名前とは異なる。通常の半透明描画だけでは、背景のぼかし・屈折が成立したことにはならない。反映後は `hyprctl configerrors`、`hyprctl plugin list`、`hyprctl -j hyprglass status` と実画面を確認する。
 

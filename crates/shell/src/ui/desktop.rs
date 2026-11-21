@@ -26,7 +26,7 @@ use super::{
     external_icon::IconIndex,
     feedback::{self, Feedback},
     icons::{self, Icon},
-    notifications::{NotificationFeed, NotificationView, notification_panel_limit},
+    notification::{NotificationFeed, NotificationView, notification_panel_limit},
     power::PowerView,
     theme,
     tray::TrayView,
@@ -473,6 +473,7 @@ fn register_panel(
                     edges: Anchor::TOP | Anchor::LEFT,
                     offset: point(px(0.), px(0.)),
                 })
+                .exit_transition(Transition::slide_left().duration(Duration::from_millis(220)))
         }
         Panel::Calendar => declaration
             .enter_transition(Transition::slide_left().duration(Duration::from_millis(260)))

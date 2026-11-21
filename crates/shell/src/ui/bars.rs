@@ -17,7 +17,7 @@ use super::{
     feedback,
     icons::{self, Icon},
     live::Live,
-    notifications::NotificationFeed,
+    notification::NotificationFeed,
     shared::{button, divider, label, row},
     theme::{self, ACCENT, DATA_FONT, FONT, MUTED, TEXT},
     tray::tray_image,

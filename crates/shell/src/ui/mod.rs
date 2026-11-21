@@ -7,7 +7,7 @@ mod external_icon;
 mod feedback;
 mod icons;
 mod live;
-mod notifications;
+mod notification;
 mod power;
 mod shared;
 mod theme;
